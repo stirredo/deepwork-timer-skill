@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+#
+# dwt — Deep Work Timer CLI (https://deepworktimer.com)
+#
+# Dependency-light: bash + curl + python3 (stdlib only).
+#
+# Config:   ~/.deepworktimer/config   (KEY=VALUE; BASE_URL=... — defaults to https://deepworktimer.com)
+# Token:    ~/.deepworktimer/token    (chmod 600)
+# Session:  ~/.deepworktimer/session  (local-only "dwt start" state)
+#
+# Override the config dir with DWT_CONFIG_DIR (useful for testing).
+
+set -euo pipefail
+
+CONFIG_DIR="${DWT_CONFIG_DIR:-$HOME/.deepworktimer}"
+CONFIG_FILE="$CONFIG_DIR/config"
+TOKEN_FILE="$CONFIG_DIR/token"
+SESSION_FILE="$CONFIG_DIR/session"
+
+BASE_URL="https://deepworktimer.com"
+
+mkdir -p "$CONFIG_DIR"
+
+# ---------------------------------------------------------------- config ----
+if [ -f "$CONFIG_FILE" ]; then
+    while IFS='=' read -r key value; do
+        case "$key" in
+            BASE_URL) BASE_URL="$value" ;;
+        esac
+    done < "$CONFIG_FILE"
+fi
+BASE_URL="${BASE_URL%/}"
+
+# --------------------------------------------------------------- helpers ----
+die() { printf 'dwt: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+    cat <<'EOF'
+dwt — Deep Work Timer CLI (deepworktimer.com)
+
+Usage:
+  dwt login <email> [-p <password>]   Get an API token (password prompted if -p omitted)
+  dwt token <raw-token>               Save a pasted API token directly
+  dwt whoami                          Show the authenticated user
+  dwt projects                        List projects (id, name)
+  dwt tasks [--project <id>]          List tasks (project tasks, or unassigned tasks)
+  dwt add <description> [--project <id>] [--estimate <seconds>]
+                                      Create a task
+  dwt done <task_id>                  Mark a task completed
+  dwt start <task_id>                 Start a local work session on a task
+  dwt log [--task <id>] [--minutes <n>]
+                                      Log a pomodoro. With no args, closes the
+                                      session from "dwt start" using elapsed time.
+  dwt status                          Current session + today's total focus time
+  dwt stats                           Focus time summary (today/7d/30d/365d/all)
+
+Config: ~/.deepworktimer/config (BASE_URL=https://deepworktimer.com by default)
+EOF
+}
+
+# run an embedded python snippet; the last API response is exposed as $API_BODY
+py() { API_BODY="${API_BODY:-}" python3 -c "$1" "${@:2}"; }
+
+save_token() {
+    umask 177
+    printf '%s\n' "$1" > "$TOKEN_FILE"
+    chmod 600 "$TOKEN_FILE"
+}
+
+require_token() {
+    [ -s "$TOKEN_FILE" ] || die "no API token found. Run: dwt login <email>   (or paste one with: dwt token <raw-token>)"
+}
+
+# api METHOD PATH [JSON_BODY] -> sets API_STATUS, API_BODY
+api() {
+    local method="$1" path="$2" body="${3:-}"
+    local args=(-sS -X "$method" "$BASE_URL/api$path" -H 'Accept: application/json' -w $'\n%{http_code}')
+    if [ -s "$TOKEN_FILE" ]; then
+        args+=(-H "Authorization: Bearer $(cat "$TOKEN_FILE")")
+    fi
+    if [ -n "$body" ]; then
+        args+=(-H 'Content-Type: application/json' --data "$body")
+    fi
+    local raw
+    if ! raw=$(curl "${args[@]}" 2>&1); then
+        die "cannot reach $BASE_URL — $raw"
+    fi
+    API_STATUS="${raw##*$'\n'}"
+    API_BODY="${raw%$'\n'*}"
+    export API_BODY
+}
+
+PY_MESSAGE='
+import json, os, sys
+try:
+    d = json.loads(os.environ["API_BODY"])
+except Exception:
+    sys.exit(1)
+parts = []
+if isinstance(d, dict):
+    if d.get("message"):
+        parts.append(str(d["message"]))
+    for field, msgs in (d.get("errors") or {}).items():
+        if isinstance(msgs, list):
+            parts.extend(str(m) for m in msgs)
+seen, unique = set(), []
+for p in parts:
+    if p not in seen:
+        seen.add(p)
+        unique.append(p)
+print(" ".join(unique) if unique else json.dumps(d))
+'
+
+extract_message() {
+    py "$PY_MESSAGE" 2>/dev/null || printf '%s' "$API_BODY"
+}
+
+check_status() {
+    case "$API_STATUS" in
+        2*) return 0 ;;
+        401) die "unauthorized (401) — your token is missing or expired. Run: dwt login <email>  (or: dwt token <raw-token>)" ;;
+        403) die "forbidden (403): $(extract_message) — note: the API requires a verified email address." ;;
+        422) die "validation error (422): $(extract_message)" ;;
+        *)   die "HTTP $API_STATUS: $(extract_message)" ;;
+    esac
+}
+
+now_utc() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+PY_ELAPSED='
+import datetime, sys
+start = datetime.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+print(int((datetime.datetime.now(datetime.timezone.utc) - start).total_seconds()))
+'
+elapsed_seconds() { py "$PY_ELAPSED" "$1"; }
+
+PY_DURATION='
+import sys
+s = int(float(sys.argv[1]))
+h, m, sec = s // 3600, (s % 3600) // 60, s % 60
+print(f"{h}h {m}m" if h else (f"{m}m {sec}s" if m else f"{sec}s"))
+'
+pretty_duration() { py "$PY_DURATION" "$1"; }
+
+read_session() {  # sets SESSION_TASK_ID, SESSION_STARTED_AT; returns 1 if none
+    SESSION_TASK_ID="" SESSION_STARTED_AT=""
+    [ -f "$SESSION_FILE" ] || return 1
+    while IFS='=' read -r key value; do
+        case "$key" in
+            TASK_ID)    SESSION_TASK_ID="$value" ;;
+            STARTED_AT) SESSION_STARTED_AT="$value" ;;
+        esac
+    done < "$SESSION_FILE"
+    [ -n "$SESSION_TASK_ID" ] && [ -n "$SESSION_STARTED_AT" ]
+}
+
+# /api/stats/general wants statTimePeriod + start_date + end_date together
+fetch_general_stats() {
+    local dates start_date end_date
+    dates=$(py '
+import datetime
+today = datetime.date.today()
+print((today - datetime.timedelta(days=29)).isoformat(), today.isoformat())
+')
+    start_date="${dates%% *}"
+    end_date="${dates##* }"
+    api GET "/stats/general?statTimePeriod=daily&start_date=$start_date&end_date=$end_date"
+    check_status
+}
+
+# -------------------------------------------------------------- commands ----
+cmd_login() {
+    local email="" password=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -p) password="${2:?-p needs a value}"; shift 2 ;;
+            *)  [ -n "$email" ] && die "unexpected argument: $1"; email="$1"; shift ;;
+        esac
+    done
+    [ -n "$email" ] || die "usage: dwt login <email> [-p <password>]"
+
+    if [ -z "$password" ]; then
+        if [ -t 0 ]; then
+            printf 'Password for %s: ' "$email" >&2
+            read -rs password
+            printf '\n' >&2
+        else
+            read -r password || true
+        fi
+    fi
+    [ -n "$password" ] || die "no password given (pipe it on stdin or use -p)"
+
+    local body
+    body=$(py 'import json, sys; print(json.dumps({"email": sys.argv[1], "password": sys.argv[2]}))' "$email" "$password")
+    api POST "/login" "$body"
+    [ "$API_STATUS" = "422" ] && die "login failed: $(extract_message)"
+    check_status
+
+    local token
+    token=$(py 'import json, os; print(json.loads(os.environ["API_BODY"])["token"])') \
+        || die "unexpected login response: $API_BODY"
+    save_token "$token"
+    echo "Logged in as $email. Token saved to $TOKEN_FILE"
+}
+
+cmd_token() {
+    local raw="${1:-}"
+    [ -n "$raw" ] || die "usage: dwt token <raw-token>"
+    save_token "$raw"
+    echo "Token saved to $TOKEN_FILE"
+    api GET "/user"
+    if [ "$API_STATUS" = "401" ]; then
+        die "the token was saved but the API rejected it (401) — double-check it, then retry."
+    fi
+    check_status
+    py '
+import json, os
+u = json.loads(os.environ["API_BODY"])
+print("Authenticated as {} <{}>".format(u.get("name"), u.get("email")))
+'
+}
+
+cmd_whoami() {
+    require_token
+    api GET "/user"
+    check_status
+    py '
+import json, os
+u = json.loads(os.environ["API_BODY"])
+print("id:       {}".format(u.get("id")))
+print("name:     {}".format(u.get("name")))
+print("email:    {}".format(u.get("email")))
+print("timezone: {}".format(u.get("timezone")))
+s = u.get("user_settings") or {}
+if s:
+    print("pomodoro: {} min work / {} min short break".format(
+        int(s.get("pomodoro_time") or 0) // 60, int(s.get("short_break_time") or 0) // 60))
+'
+}
+
+cmd_projects() {
+    require_token
+    api GET "/projects"
+    check_status
+    py '
+import json, os
+projects = json.loads(os.environ["API_BODY"]).get("data") or []
+if not projects:
+    print("(no projects)")
+else:
+    print("{:>6}  NAME".format("ID"))
+    for p in projects:
+        print("{:>6}  {}".format(p["id"], p.get("name") or ""))
+'
+}
+
+cmd_tasks() {
+    require_token
+    local project=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --project) project="${2:?--project needs a value}"; shift 2 ;;
+            *) die "unexpected argument: $1" ;;
+        esac
+    done
+    local path="/tasks"
+    [ -n "$project" ] && path="/tasks?project_id=$project"
+    api GET "$path"
+    check_status
+    py '
+import json, os
+tasks = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("tasks") or []
+def walk(items, depth=0):
+    for t in items:
+        mark = "x" if t.get("completed") else " "
+        print("{:>6}  [{}]   {}{}".format(t["id"], mark, "  " * depth, t.get("description") or ""))
+        walk(t.get("children") or [], depth + 1)
+if not tasks:
+    print("(no tasks)")
+else:
+    print("{:>6}  DONE  DESCRIPTION".format("ID"))
+    walk(tasks)
+'
+}
+
+cmd_add() {
+    require_token
+    local description="" project="" estimate=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --project)  project="${2:?--project needs a value}"; shift 2 ;;
+            --estimate) estimate="${2:?--estimate needs a value}"; shift 2 ;;
+            *)  [ -n "$description" ] && die "unexpected argument: $1 (quote the description)"; description="$1"; shift ;;
+        esac
+    done
+    [ -n "$description" ] || die 'usage: dwt add "<description>" [--project <id>] [--estimate <seconds>]'
+
+    # NOTE: the create endpoint takes task_description (NOT description)
+    local body
+    body=$(py '
+import json, sys
+desc, project = sys.argv[1], sys.argv[2]
+payload = {"task_description": desc}
+if project:
+    payload["project_id"] = int(project)
+print(json.dumps(payload))
+' "$description" "$project")
+    api POST "/tasks" "$body"
+    check_status
+    local task_id
+    task_id=$(py '
+import json, os
+t = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("task") or {}
+print(t.get("id"))
+')
+
+    # API quirk: POST /api/tasks validates estimated_time but ignores it, and the
+    # field's unit is MINUTES (the web UI sends hours*60+minutes). So we convert
+    # seconds -> minutes and apply the estimate with a follow-up PATCH.
+    if [ -n "$estimate" ]; then
+        local est_minutes=$(( (estimate + 59) / 60 ))
+        api PATCH "/tasks/$task_id" "{\"estimated_time\": $est_minutes}"
+        check_status
+        echo "Created task $task_id: $description (estimate: ${est_minutes}m)"
+    else
+        echo "Created task $task_id: $description"
+    fi
+}
+
+cmd_done() {
+    require_token
+    local task_id="${1:-}"
+    [ -n "$task_id" ] || die "usage: dwt done <task_id>"
+    api PATCH "/tasks/$task_id" '{"completed": true}'
+    check_status
+    py '
+import json, os
+t = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("task") or {}
+print("Completed task {}: {}".format(t.get("id"), t.get("description")))
+'
+}
+
+cmd_start() {
+    require_token
+    local task_id="${1:-}"
+    [ -n "$task_id" ] || die "usage: dwt start <task_id>"
+    if read_session; then
+        echo "note: replacing existing session (task $SESSION_TASK_ID started $SESSION_STARTED_AT)" >&2
+    fi
+    local started
+    started=$(now_utc)
+    printf 'TASK_ID=%s\nSTARTED_AT=%s\n' "$task_id" "$started" > "$SESSION_FILE"
+    echo "Session started on task $task_id at $started (local state only — run 'dwt log' to record it)"
+}
+
+cmd_log() {
+    require_token
+    local task="" minutes=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --task)    task="${2:?--task needs a value}"; shift 2 ;;
+            --minutes) minutes="${2:?--minutes needs a value}"; shift 2 ;;
+            *) die "unexpected argument: $1" ;;
+        esac
+    done
+
+    local have_session=0
+    read_session && have_session=1
+
+    if [ -z "$task" ]; then
+        [ "$have_session" = 1 ] || die "no active session and no --task given. Run: dwt start <task_id>  or  dwt log --task <id> --minutes <n>"
+        task="$SESSION_TASK_ID"
+    fi
+
+    local seconds
+    if [ -n "$minutes" ]; then
+        seconds=$(( minutes * 60 ))
+    else
+        [ "$have_session" = 1 ] || die "no active session — pass --minutes <n> to log a fixed amount"
+        seconds=$(elapsed_seconds "$SESSION_STARTED_AT")
+    fi
+    [ "$seconds" -gt 0 ] || die "nothing to log (elapsed time is 0s)"
+
+    local body
+    body=$(py '
+import json, sys
+secs, task = int(sys.argv[1]), int(sys.argv[2])
+print(json.dumps({"time": secs, "tasks": [{"id": task, "effort_time": secs}]}))
+' "$seconds" "$task")
+    api POST "/pomodoro" "$body"
+    check_status
+
+    # close the local session if it was the one we just logged
+    if [ "$have_session" = 1 ] && [ "$task" = "$SESSION_TASK_ID" ]; then
+        rm -f "$SESSION_FILE"
+    fi
+    echo "Logged $(pretty_duration "$seconds") on task $task."
+}
+
+cmd_status() {
+    require_token
+    if read_session; then
+        local elapsed
+        elapsed=$(elapsed_seconds "$SESSION_STARTED_AT")
+        echo "Active session: task $SESSION_TASK_ID — $(pretty_duration "$elapsed") elapsed (started $SESSION_STARTED_AT)"
+    else
+        echo "No active session. Start one with: dwt start <task_id>"
+    fi
+    fetch_general_stats
+    py '
+import json, os
+stats = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("stats") or {}
+today = (stats.get("total_time") or {}).get("today") or {}
+print("Today total focus time: {}".format(today.get("human_friendly_time") or "0 minutes"))
+'
+}
+
+cmd_stats() {
+    require_token
+    fetch_general_stats
+    py '
+import json, os
+stats = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("stats") or {}
+tt = stats.get("total_time") or {}
+def row(label, key):
+    print("{:<15}{}".format(label, (tt.get(key) or {}).get("human_friendly_time") or "0 minutes"))
+print("Focus time")
+print("----------")
+row("Today:", "today")
+row("Last 7 days:", "last_7_days")
+row("Last 30 days:", "last_30_days")
+row("Last 365 days:", "last_365_days")
+row("All time:", "all_time")
+def hum(seconds):
+    s = int(float(seconds or 0)); h, m = s // 3600, (s % 3600) // 60
+    return "{}h {}m".format(h, m) if h else "{}m".format(m)
+best = stats.get("best") or {}
+if best.get("date"):
+    # human_friendly_date already embeds the duration, e.g. "0h26m on 9 Jun, 2026"
+    label = best.get("human_friendly_date") or "{} on {}".format(hum(best.get("total_time")), best["date"])
+    print("{:<15}{}".format("Best day:", label))
+avg = stats.get("average")
+if avg:
+    print("{:<15}{} (over last 30 days)".format("Daily average:", hum(avg)))
+'
+}
+
+# ------------------------------------------------------------------ main ----
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+
+case "$cmd" in
+    login)    cmd_login "$@" ;;
+    token)    cmd_token "$@" ;;
+    whoami)   cmd_whoami "$@" ;;
+    projects) cmd_projects "$@" ;;
+    tasks)    cmd_tasks "$@" ;;
+    add)      cmd_add "$@" ;;
+    done)     cmd_done "$@" ;;
+    start)    cmd_start "$@" ;;
+    log)      cmd_log "$@" ;;
+    status)   cmd_status "$@" ;;
+    stats)    cmd_stats "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *) usage >&2; die "unknown command: $cmd" ;;
+esac
