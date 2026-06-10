@@ -70,3 +70,11 @@ has NO password set, so `dwt login` will not work until one of these is done:
 - All protected routes require a verified email (`verified` middleware) —
   unverified accounts get 403s even with a valid token.
 - Stats "today" boundaries use the account's timezone (America/Toronto).
+
+## Server-side sessions (2026-06-11)
+
+- `dwt start <task_id>` starts a session on the SERVER: one active session per account, visible from every machine; starting elsewhere takes over and reports it.
+- `dwt switch <task_id>` switches the active segment mid-session — one pomodoro, honestly split across tasks.
+- `dwt log` completes the server session (the server computes the per-task split). `--task/--minutes` still log a direct pomodoro.
+- `dwt abandon` ends the session without logging.
+- `dwt status` shows the active session wherever it started (machine label included).

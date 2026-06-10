@@ -340,10 +340,70 @@ print("Completed task {}: {}".format(t.get("id"), t.get("description")))
 '
 }
 
+
+# ---- server-side sessions (deepworktimer >= 2026-06-11) --------------------
+# One active session per ACCOUNT, visible from every machine. Falls back to
+# the local session file when the server predates the endpoints (404).
+
+machine_label() { hostname -s 2>/dev/null || echo "dwt"; }
+
+PY_SESSION_SUMMARY='
+import json, os, sys
+d = json.loads(os.environ["API_BODY"])
+s = d.get("session")
+if not s:
+    print("none")
+    sys.exit(0)
+rem = int(s.get("remaining_seconds") or 0)
+segs = s.get("segments") or []
+cur = next((x.get("task_id") for x in reversed(segs) if x.get("seconds") is None), None)
+parts = ["id=%s" % s["id"], "remaining=%s" % rem, "source=%s" % (s.get("source") or "?"),
+         "task=%s" % (cur if cur is not None else "-"), "overdue=%s" % ("yes" if s.get("overdue") else "no"),
+         "segments=%s" % len(segs)]
+print("|".join(str(p) for p in parts))
+'
+
+server_session_get() {  # sets SRV_*; returns 1 if no endpoint, 2 if none active
+    api GET "/session"
+    [ "$API_STATUS" = "404" ] && return 1
+    check_status
+    local line
+    line=$(py "$PY_SESSION_SUMMARY")
+    [ "$line" = "none" ] && return 2
+    SRV_ID="${line%%|*}";       SRV_ID="${SRV_ID#id=}"
+    SRV_REMAINING=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^remaining=//p")
+    SRV_SOURCE=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^source=//p")
+    SRV_TASK=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^task=//p")
+    SRV_OVERDUE=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^overdue=//p")
+    SRV_SEGMENTS=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^segments=//p")
+    return 0
+}
+
 cmd_start() {
     require_token
     local task_id="${1:-}"
     [ -n "$task_id" ] || die "usage: dwt start <task_id>"
+
+    local body
+    body=$(py '
+import json, sys
+print(json.dumps({"task_id": int(sys.argv[1]), "source": sys.argv[2]}))
+' "$task_id" "$(machine_label)")
+    api POST "/session/start" "$body"
+    if [ "$API_STATUS" != "404" ]; then
+        check_status
+        local took
+        took=$(py '
+import json, os
+print(json.loads(os.environ["API_BODY"]).get("took_over") or "")
+')
+        [ -n "$took" ] && echo "note: took over the session that was running on: $took" >&2
+        rm -f "$SESSION_FILE"
+        echo "Session started on task $task_id (server-side — visible from every machine; run dwt log or dwt switch <id> next)"
+        return 0
+    fi
+
+    # server predates sessions — local fallback
     if read_session; then
         echo "note: replacing existing session (task $SESSION_TASK_ID started $SESSION_STARTED_AT)" >&2
     fi
@@ -351,6 +411,30 @@ cmd_start() {
     started=$(now_utc)
     printf 'TASK_ID=%s\nSTARTED_AT=%s\n' "$task_id" "$started" > "$SESSION_FILE"
     echo "Session started on task $task_id at $started (local state only — run 'dwt log' to record it)"
+}
+
+cmd_switch() {
+    require_token
+    local task_id="${1:-}"
+    [ -n "$task_id" ] || die "usage: dwt switch <task_id>"
+    local body
+    body=$(py '
+import json, sys
+print(json.dumps({"task_id": int(sys.argv[1])}))
+' "$task_id")
+    api POST "/session/switch" "$body"
+    [ "$API_STATUS" = "404" ] && die "no active server session (or the server predates sessions). Run: dwt start <task_id>"
+    check_status
+    echo "Switched the active session to task $task_id — time keeps accruing in the same pomodoro."
+}
+
+cmd_abandon() {
+    require_token
+    api DELETE "/session"
+    [ "$API_STATUS" = "404" ] && { rm -f "$SESSION_FILE"; echo "No server session; cleared any local one."; return 0; }
+    check_status
+    rm -f "$SESSION_FILE"
+    echo "Session abandoned — nothing logged."
 }
 
 cmd_log() {
@@ -363,6 +447,24 @@ cmd_log() {
             *) die "unexpected argument: $1" ;;
         esac
     done
+
+    # server session takes precedence when no explicit overrides are given
+    if [ -z "$task" ] && [ -z "$minutes" ]; then
+        if server_session_get; then
+            api POST "/session/complete"
+            check_status
+            py '
+import json, os
+d = json.loads(os.environ["API_BODY"])
+p = d.get("pomodoro") or {}
+secs = int(p.get("time") or 0)
+tasks = p.get("tasks") or []
+split = ", ".join("task {}: {}m".format(t["id"], (t.get("pivot") or {}).get("effort_time", 0) // 60) for t in tasks)
+print("Logged {}m total{}.".format(secs // 60, " ({})".format(split) if split else ""))
+'
+            return 0
+        fi
+    fi
 
     local have_session=0
     read_session && have_session=1
@@ -399,7 +501,21 @@ print(json.dumps({"time": secs, "tasks": [{"id": task, "effort_time": secs}]}))
 
 cmd_status() {
     require_token
-    if read_session; then
+    local srv_rc
+    server_session_get; srv_rc=$?
+    if [ "$srv_rc" = 0 ]; then
+        local where=""
+        [ "$SRV_SOURCE" != "$(machine_label)" ] && where=" on $SRV_SOURCE"
+        if [ "$SRV_OVERDUE" = "yes" ]; then
+            echo "Active session$where: task $SRV_TASK — finished (run 'dwt log' to record it; $SRV_SEGMENTS segment(s))"
+        else
+            echo "Active session$where: task $SRV_TASK — $(pretty_duration "$SRV_REMAINING") remaining ($SRV_SEGMENTS segment(s))"
+        fi
+    elif [ "$srv_rc" = 2 ]; then
+        # the server is authoritative: no active session anywhere
+        rm -f "$SESSION_FILE"
+        echo "No active session. Start one with: dwt start <task_id>"
+    elif read_session; then
         local elapsed
         elapsed=$(elapsed_seconds "$SESSION_STARTED_AT")
         echo "Active session: task $SESSION_TASK_ID — $(pretty_duration "$elapsed") elapsed (started $SESSION_STARTED_AT)"
@@ -458,6 +574,8 @@ case "$cmd" in
     add)      cmd_add "$@" ;;
     done)     cmd_done "$@" ;;
     start)    cmd_start "$@" ;;
+    switch)   cmd_switch "$@" ;;
+    abandon)  cmd_abandon "$@" ;;
     log)      cmd_log "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
