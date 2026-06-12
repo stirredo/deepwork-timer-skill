@@ -59,6 +59,9 @@ Usage:
                                       to the current directory)
   dwt latch [<task_id>]               Latch THIS Claude session to a task (outranks
                                       dwt map; --clear unbinds; no args lists)
+  dwt repeat <task_id> <rule|--clear> Make a task recurring (every:7d, every:12h,
+                                      weekly:mon,thu) — completion records the
+                                      cycle and re-snoozes until the next wake
   dwt status                          Current session + today's total focus time
   dwt statusline-install              Append the live 🍅 segment to this
                                       machine's Claude Code statusline
@@ -764,6 +767,26 @@ print(json.dumps({"snoozed_until": ts.isoformat()}))
     fi
 }
 
+# recurrence: completing the task then re-snoozes it until the next wake.
+cmd_repeat() {
+    require_token
+    local task_id="${1:-}" rule="${2:-}"
+    [ -n "$task_id" ] && [ -n "$rule" ] || die "usage: dwt repeat <task_id> <every:7d|every:12h|weekly:mon,thu>  (or: dwt repeat <task_id> --clear)"
+    local body
+    if [ "$rule" = "--clear" ]; then
+        body='{"recurrence": null}'
+    else
+        body=$(py 'import json,sys; print(json.dumps({"recurrence": sys.argv[1]}))' "$rule")
+    fi
+    api PATCH "/tasks/$task_id" "$body"
+    check_status
+    if [ "$rule" = "--clear" ]; then
+        echo "Task $task_id no longer repeats."
+    else
+        echo "Task $task_id repeats ($rule): completing it records the cycle and re-snoozes it until the next wake — a Web Push fires when it is due."
+    fi
+}
+
 cmd_status() {
     require_token
     local srv_rc
@@ -848,6 +871,7 @@ case "$cmd" in
     hooks-install) cmd_hooks_install "$@" ;;
     map)      cmd_map "$@" ;;
     snooze)   cmd_snooze "$@" ;;
+    repeat)   cmd_repeat "$@" ;;
     latch)    cmd_latch "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
