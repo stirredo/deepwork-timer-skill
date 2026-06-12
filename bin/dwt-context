@@ -3,29 +3,74 @@
 # Claude's context on every prompt, so it can act on it (recommend a task,
 # suggest a switch, flag an overdue session) without being asked.
 #
+# MULTI-SESSION ARBITER: when several Claude Code windows share the one
+# server-side session, the user's prompts are the live signal of where
+# their attention is. If this window's working directory is mapped to a
+# task (`dwt map`), and the active segment points elsewhere, the hook
+# switches the segment here (debounced + locked across windows). Sequential
+# segments then split the pomodoro honestly across everything the user
+# actually steered — totals stay wall-clock true.
+#
 # Reuses the statusline cache (60s background refresh, never blocks).
-# Output contract (one line, or nothing when not authenticated):
-#   [dwt] no active session — consider proposing one if substantive work is underway
-#   [dwt] active session: '<task>' — MM:SS left
-#   [dwt] session OVERDUE by <dur>: '<task>' — propose `dwt log` (record) or `dwt abandon`
+# Cache format: ends \t task_id \t label  (legacy: ends \t label)
 
-CACHE="$HOME/.deepworktimer/statusline-cache"
-TOKEN_FILE="$HOME/.deepworktimer/token"
+CFG="$HOME/.deepworktimer"
+CACHE="$CFG/statusline-cache"
+TOKEN_FILE="$CFG/token"
+BIN="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$TOKEN_FILE" ] || exit 0
 
+# stdin carries the hook payload (JSON with "cwd"); never block on a TTY
+HOOK_JSON=""
+[ ! -t 0 ] && HOOK_JSON=$(cat 2>/dev/null || true)
+
+# resolve this window's mapped task via longest-prefix match on cwd
+mapped=""
+if [ -s "$CFG/taskmap" ]; then
+    mapped=$(HOOK_JSON="$HOOK_JSON" python3 -c '
+import json, os
+cwd = ""
+try:
+    cwd = json.loads(os.environ.get("HOOK_JSON") or "{}").get("cwd") or ""
+except Exception:
+    pass
+cwd = cwd or os.environ.get("PWD", "")
+best = ("", "")
+try:
+    with open(os.path.expanduser("~/.deepworktimer/taskmap")) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t", 1)
+            if len(parts) != 2:
+                continue
+            tid, path = parts
+            if (cwd == path or cwd.startswith(path + "/")) and len(path) > len(best[1]):
+                best = (tid, path)
+except Exception:
+    pass
+print(best[0])
+' 2>/dev/null)
+fi
+
 # trigger the same refresh logic the statusline uses
-"$(dirname "$0")/dwt-statusline" >/dev/null 2>&1
+"$BIN/dwt-statusline" >/dev/null 2>&1
 
 [ -f "$CACHE" ] || exit 0
 state=$(cat "$CACHE" 2>/dev/null)
 
 if [ "$state" = "none" ] || [ -z "$state" ]; then
-    echo "[dwt] no active session — if substantive work is underway, propose a tracking task (see deepwork-timer skill)"
+    if [ -n "$mapped" ]; then
+        echo "[dwt] no active session — this window's workdir maps to task $mapped; if substantive work is underway propose \`dwt start $mapped\` (see deepwork-timer skill)"
+    else
+        echo "[dwt] no active session — if substantive work is underway, propose a tracking task (see deepwork-timer skill)"
+    fi
     exit 0
 fi
 
 ends=${state%%	*}
-label=${state#*	}
+rest=${state#*	}
+tid=${rest%%	*}
+label=${rest#*	}
+if [ "$label" = "$rest" ]; then tid=""; fi   # legacy 2-field cache
 [ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
 now=$(date +%s)
 left=$(( ends - now ))
@@ -33,6 +78,28 @@ left=$(( ends - now ))
 if [ "$left" -le 0 ]; then
     over=$(( -left ))
     echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label' — propose \`dwt log\` (record it) or \`dwt abandon\`, or \`dwt start\` a fresh one if work continues"
-else
-    echo "[dwt] active session: '$label' — $(( left / 60 )):$(printf '%02d' $(( left % 60 ))) left. If the conversation's focus no longer matches, suggest \`dwt switch\`."
+    exit 0
 fi
+
+# ----- arbiter: steer the active segment toward this window's task -------
+arbiter_note=""
+if [ -n "$mapped" ] && [ -n "$tid" ] && [ "$mapped" != "$tid" ]; then
+    # one switch at a time across all windows, at most one per 60s
+    if mkdir "$CFG/arbiter.lock" 2>/dev/null; then
+        last=$(cat "$CFG/arbiter-last" 2>/dev/null || echo 0)
+        case "$last" in (*[!0-9]*|'') last=0 ;; esac
+        if [ $(( now - last )) -ge 60 ]; then
+            echo "$now" > "$CFG/arbiter-last"
+            ( "$BIN/dwt" switch "$mapped" >/dev/null 2>&1 & ) 2>/dev/null
+            arbiter_note=" Arbiter: switching the segment to task $mapped (this window's mapped task) — the pomodoro splits honestly across windows."
+        else
+            arbiter_note=" Arbiter: segment is on task $tid, this window maps to $mapped — switch debounced ($(( 60 - (now - last) ))s)."
+        fi
+        rmdir "$CFG/arbiter.lock" 2>/dev/null
+    fi
+fi
+
+if [ -z "$arbiter_note" ]; then
+    arbiter_note=" If the conversation's focus no longer matches, suggest \`dwt switch\`."
+fi
+echo "[dwt] active session: '$label' — $(( left / 60 )):$(printf '%02d' $(( left % 60 ))) left.$arbiter_note"

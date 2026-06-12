@@ -15,6 +15,13 @@ work"): it proposes, the user approves — nothing is logged or switched
 silently. Cache-backed (60s, shared with the statusline) so prompts are
 never blocked.
 
+The hook is also the **multi-session arbiter** (SKILL.md "Multiple Claude
+Code windows"): with `dwt map` in place, each prompt steers the active
+segment toward the window the user is actually working in — debounced,
+locked across windows, splits stay wall-clock honest. This switching IS
+sanctioned by the user via the mapping, so it is the one exception to
+"nothing is switched silently".
+
 ## 2. Statusline segment — visibility
 
 `bin/dwt-statusline-wrap` composes a `🍅 <task> · mm:ss left` segment with
