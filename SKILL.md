@@ -40,7 +40,7 @@ missing/expired — see Onboarding below.
 | `dwt tasks [--project <id>]` | List tasks; without `--project`, the unassigned ones. Subtasks indented. |
 | `dwt add "<desc>" [--project <id>] [--estimate <seconds>]` | Create a task. `#skill` words in the description become skill tags. |
 | `dwt done <task_id>` | Mark a task completed. |
-| `dwt start <task_id>` | Start a SERVER session on the task (may take over — see above). |
+| `dwt start <task_id> [--minutes <n>]` | Start a SERVER session on the task (may take over — see above). `--minutes` sets a custom length (1–240; default is the account's pomodoro length). |
 | `dwt switch <task_id>` | Re-point the running session at another task; one pomodoro, honestly split per segment. |
 | `dwt abandon` | End the running session, logging nothing. |
 | `dwt log` | Complete the running server session → records the pomodoro with its per-task splits (server computes them). `--task <id> --minutes <n>` logs a fixed direct pomodoro instead. |
@@ -68,9 +68,8 @@ when Claude does the execution. Follow this loop:
    to an existing task or propose a new one (same one-line format).
 3. **When the session goes overdue or work wraps**, run `dwt log`, report
    what was logged, and offer to start the next one if work continues.
-4. Prefer the CLI over raw API calls. The one thing it cannot do is custom
-   session durations (`POST /api/session/start` accepts `duration_seconds`
-   60–14400) — only drop to curl for that.
+4. Prefer the CLI over raw API calls — including custom session lengths
+   (`dwt start <id> --minutes <n>`).
 
 ## Config
 

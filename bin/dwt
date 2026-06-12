@@ -47,7 +47,9 @@ Usage:
   dwt add <description> [--project <id>] [--estimate <seconds>]
                                       Create a task
   dwt done <task_id>                  Mark a task completed
-  dwt start <task_id>                 Start a local work session on a task
+  dwt start <task_id> [--minutes <n>] Start a server session on a task
+                                      (custom length 1..240 min; default is
+                                      the account pomodoro length)
   dwt log [--task <id>] [--minutes <n>]
                                       Log a pomodoro. With no args, closes the
                                       session from "dwt start" using elapsed time.
@@ -388,14 +390,27 @@ server_session_get() {  # sets SRV_*; returns 1 if no endpoint, 2 if none active
 
 cmd_start() {
     require_token
-    local task_id="${1:-}"
-    [ -n "$task_id" ] || die "usage: dwt start <task_id>"
+    local task_id="" minutes=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --minutes) minutes="${2:?--minutes needs a value}"; shift 2 ;;
+            *) task_id="$1"; shift ;;
+        esac
+    done
+    [ -n "$task_id" ] || die "usage: dwt start <task_id> [--minutes <n>]"
+    if [ -n "$minutes" ]; then
+        { [ "$minutes" -ge 1 ] && [ "$minutes" -le 240 ]; } 2>/dev/null \
+            || die "--minutes must be 1..240 (server accepts 60..14400 seconds)"
+    fi
 
     local body
     body=$(py '
 import json, sys
-print(json.dumps({"task_id": int(sys.argv[1]), "source": sys.argv[2]}))
-' "$task_id" "$(machine_label)")
+payload = {"task_id": int(sys.argv[1]), "source": sys.argv[2]}
+if sys.argv[3]:
+    payload["duration_seconds"] = max(60, int(sys.argv[3]) * 60)
+print(json.dumps(payload))
+' "$task_id" "$(machine_label)" "$minutes")
     api POST "/session/start" "$body"
     if [ "$API_STATUS" != "404" ]; then
         check_status
