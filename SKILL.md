@@ -47,6 +47,7 @@ missing/expired — see Onboarding below.
 | `dwt status` | Active session (task, remaining, segments, machine label) + today's total. |
 | `dwt stats` | Today / 7d / 30d / 365d / all-time, best day, daily average. |
 | `dwt statusline-install` | Wrap this machine's Claude Code statusline so a live `🍅 task · mm:ss left` segment is appended. Idempotent; only edits `~/.claude/settings.json` — every machine keeps its own statusline. |
+| `dwt hooks-install` | Add a UserPromptSubmit hook that injects one line of live session state (`[dwt] …`) into Claude's context on every prompt. This is what powers the tracking loop below — act on those lines without being asked. |
 
 ## Tracking Claude Code work (the default behavior)
 

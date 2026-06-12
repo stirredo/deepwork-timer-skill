@@ -1,0 +1,38 @@
+#!/bin/sh
+# UserPromptSubmit hook: inject the current Deep Work Timer state into
+# Claude's context on every prompt, so it can act on it (recommend a task,
+# suggest a switch, flag an overdue session) without being asked.
+#
+# Reuses the statusline cache (60s background refresh, never blocks).
+# Output contract (one line, or nothing when not authenticated):
+#   [dwt] no active session — consider proposing one if substantive work is underway
+#   [dwt] active session: '<task>' — MM:SS left
+#   [dwt] session OVERDUE by <dur>: '<task>' — propose `dwt log` (record) or `dwt abandon`
+
+CACHE="$HOME/.deepworktimer/statusline-cache"
+TOKEN_FILE="$HOME/.deepworktimer/token"
+[ -f "$TOKEN_FILE" ] || exit 0
+
+# trigger the same refresh logic the statusline uses
+"$(dirname "$0")/dwt-statusline" >/dev/null 2>&1
+
+[ -f "$CACHE" ] || exit 0
+state=$(cat "$CACHE" 2>/dev/null)
+
+if [ "$state" = "none" ] || [ -z "$state" ]; then
+    echo "[dwt] no active session — if substantive work is underway, propose a tracking task (see deepwork-timer skill)"
+    exit 0
+fi
+
+ends=${state%%	*}
+label=${state#*	}
+[ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
+now=$(date +%s)
+left=$(( ends - now ))
+
+if [ "$left" -le 0 ]; then
+    over=$(( -left ))
+    echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label' — propose \`dwt log\` (record it) or \`dwt abandon\`, or \`dwt start\` a fresh one if work continues"
+else
+    echo "[dwt] active session: '$label' — $(( left / 60 )):$(printf '%02d' $(( left % 60 ))) left. If the conversation's focus no longer matches, suggest \`dwt switch\`."
+fi

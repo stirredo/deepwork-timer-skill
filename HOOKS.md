@@ -1,74 +1,28 @@
-# Auto-logging Claude Code work time to Deep Work Timer (proposal — NOT installed)
+# dwt × Claude Code automation (installed via `dwt hooks-install` / `dwt statusline-install`)
 
-Idea: while Claude Code works on a task, keep a `dwt` session open and let hooks
-flush elapsed time to deepworktimer.com automatically, so focus stats accumulate
-without manual `dwt log` calls.
+Two integrations keep Deep Work Timer ambient inside Claude Code:
 
-## Recommended design: Stop hook with a minimum-elapsed threshold
+## 1. Context hook (UserPromptSubmit) — awareness
 
-- You (or Claude) run `dwt start <task_id>` once when work on a tracked task begins.
-- A `Stop` hook fires after each assistant turn. It checks the local session file
-  and, only if at least N minutes have elapsed, runs `dwt log` (which posts the
-  pomodoro and clears the session) and immediately re-starts the session on the
-  same task. Short turns are skipped, so you get one pomodoro per ~N minutes of
-  real work instead of one per turn.
-- This composes well with the API's `ExtendsPreviousPomodoroRule`: elapsed wall
-  time since the previous log can never overlap the previous pomodoro, so the
-  flushes always validate.
+`bin/dwt-context` injects one line into Claude's context on every prompt:
 
-### settings.json snippet (add to `~/.claude/settings.json`)
+- `[dwt] no active session — …propose a tracking task`
+- `[dwt] active session: '<task>' — 12:33 left …suggest dwt switch if focus moved`
+- `[dwt] session OVERDUE by 47m on '<task>' — propose dwt log or dwt abandon`
 
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/bin/bash -c 's=\"$HOME/.deepworktimer/session\"; dwt=\"$HOME/.claude/skills/deepwork-timer/bin/dwt\"; [ -f \"$s\" ] || exit 0; task=$(sed -n \"s/^TASK_ID=//p\" \"$s\"); start=$(sed -n \"s/^STARTED_AT=//p\" \"$s\"); now=$(date -u +%s); begin=$(date -j -u -f \"%Y-%m-%dT%H:%M:%SZ\" \"$start\" +%s 2>/dev/null || echo \"$now\"); el=$((now-begin)); [ \"$el\" -ge 600 ] && { \"$dwt\" log >/dev/null 2>&1 && \"$dwt\" start \"$task\" >/dev/null 2>&1; }; exit 0'"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
+Claude acts on these conversationally (see SKILL.md "Tracking Claude Code
+work"): it proposes, the user approves — nothing is logged or switched
+silently. Cache-backed (60s, shared with the statusline) so prompts are
+never blocked.
 
-Notes on the snippet:
-- `600` = flush threshold in seconds (10 min). Raise to 1500 for strict
-  25-minute pomodoros.
-- It exits 0 unconditionally so a network failure never blocks Claude's turn.
-- `date -j -u -f` is the macOS form; on Linux use `date -u -d "$start" +%s`.
+## 2. Statusline segment — visibility
 
-## Alternative: SessionEnd hook (one pomodoro per Claude Code session)
+`bin/dwt-statusline-wrap` composes a `🍅 <task> · mm:ss left` segment with
+whatever statusline the machine already uses.
 
-If per-turn flushing feels noisy, log once when the Claude Code session ends:
+## Why no auto-logging Stop hook
 
-```json
-{
-  "hooks": {
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "/bin/bash -c '[ -f \"$HOME/.deepworktimer/session\" ] && \"$HOME/.claude/skills/deepwork-timer/bin/dwt\" log >/dev/null 2>&1; exit 0'"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Trade-off: a crash or long-idle session inflates the logged time (elapsed wall
-time, not active time). The Stop-hook variant caps each flush at the threshold
-interval, which tracks reality better.
-
-## Why not auto-start?
-
-Starting a session automatically (e.g. on `UserPromptSubmit`) would need a way
-to map the conversation to a Deep Work Timer task id. Better to keep `dwt start`
-explicit: when the user says "track this", Claude picks/creates the task via
-`dwt add` / `dwt tasks` and runs `dwt start <id>`.
+An earlier proposal auto-ran `dwt log` from a Stop hook. With server-side
+sessions that is unsafe: sessions are shared across devices, and a hook on
+one machine would complete a session the user is running from their phone.
+Awareness + explicit suggestion (above) replaces it.

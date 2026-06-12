@@ -54,6 +54,8 @@ Usage:
   dwt status                          Current session + today's total focus time
   dwt statusline-install              Append the live 🍅 segment to this
                                       machine's Claude Code statusline
+  dwt hooks-install                   Inject live session state into Claude's
+                                      context on every prompt (UserPromptSubmit)
   dwt stats                           Focus time summary (today/7d/30d/365d/all)
 
 Config: ~/.deepworktimer/config (BASE_URL=https://deepworktimer.com by default)
@@ -442,6 +444,37 @@ cmd_abandon() {
     echo "Session abandoned — nothing logged."
 }
 
+cmd_hooks_install() {
+    # Add a UserPromptSubmit hook that injects the live session state into
+    # Claude's context every prompt (idempotent; settings.json only).
+    python3 - <<'PYEOF'
+import json, os, sys
+
+settings_path = os.path.expanduser('~/.claude/settings.json')
+cmd = os.path.expanduser('~/.claude/skills/deepwork-timer/bin/dwt-context')
+
+settings = {}
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+
+hooks = settings.setdefault('hooks', {})
+entries = hooks.setdefault('UserPromptSubmit', [])
+for entry in entries:
+    for h in entry.get('hooks', []):
+        if 'dwt-context' in h.get('command', ''):
+            print('dwt context hook already installed — nothing to do')
+            sys.exit(0)
+
+entries.append({'matcher': '*', 'hooks': [{'type': 'command', 'command': cmd, 'timeout': 5}]})
+
+with open(settings_path + '.tmp', 'w') as f:
+    json.dump(settings, f, indent=2)
+os.replace(settings_path + '.tmp', settings_path)
+print('dwt context hook installed: session state now appears in Claude\'s context every prompt')
+PYEOF
+}
+
 cmd_statusline_install() {
     # Wrap this machine's existing Claude Code statusline with the dwt
     # segment, touching only ~/.claude/settings.json (idempotent).
@@ -615,6 +648,7 @@ case "$cmd" in
     abandon)  cmd_abandon "$@" ;;
     log)      cmd_log "$@" ;;
     statusline-install) cmd_statusline_install "$@" ;;
+    hooks-install) cmd_hooks_install "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
     ""|-h|--help|help) usage ;;
