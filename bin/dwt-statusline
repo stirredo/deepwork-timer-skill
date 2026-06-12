@@ -29,8 +29,10 @@ if not s or s.get("completed_at") or s.get("abandoned_at"):
     print("none")
     sys.exit(0)
 ends = datetime.datetime.fromisoformat(s["ends_at"]).timestamp()
-task = (s.get("segments") or [{}])[-1].get("task_id", "?")
-print("{} {}".format(int(ends), task))
+seg = (s.get("segments") or [{}])[-1]
+label = seg.get("task_description") or "task {}".format(seg.get("task_id", "?"))
+label = label.split("#")[0].strip()[:32] or "task {}".format(seg.get("task_id", "?"))
+print("{}\t{}".format(int(ends), label))
 ' > "$CACHE.tmp" 2>/dev/null && mv "$CACHE.tmp" "$CACHE"
 }
 
@@ -42,13 +44,13 @@ fi
 [ -f "$CACHE" ] || exit 0
 state=$(cat "$CACHE" 2>/dev/null)
 [ "$state" = "none" ] && exit 0
-set -- $state
-ends=$1; task=$2
-[ -n "$ends" ] || exit 0
+ends=${state%%	*}
+label=${state#*	}
+[ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
 
 left=$(( ends - now ))
 if [ "$left" -le 0 ]; then
-    printf '🍅 task %s OVERDUE — dwt log to record' "$task"
+    printf '🍅 %s — OVERDUE, dwt log to record' "$label"
 else
-    printf '🍅 task %s · %d:%02d left' "$task" $(( left / 60 )) $(( left % 60 ))
+    printf '🍅 %s · %d:%02d left' "$label" $(( left / 60 )) $(( left % 60 ))
 fi

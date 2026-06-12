@@ -358,9 +358,11 @@ if not s:
     sys.exit(0)
 rem = int(s.get("remaining_seconds") or 0)
 segs = s.get("segments") or []
-cur = next((x.get("task_id") for x in reversed(segs) if x.get("seconds") is None), None)
+cur = next((x for x in reversed(segs) if x.get("seconds") is None), {})
+desc = (cur.get("task_description") or "").replace("|", "/")
 parts = ["id=%s" % s["id"], "remaining=%s" % rem, "source=%s" % (s.get("source") or "?"),
-         "task=%s" % (cur if cur is not None else "-"), "overdue=%s" % ("yes" if s.get("overdue") else "no"),
+         "task=%s" % (cur.get("task_id") if cur.get("task_id") is not None else "-"),
+         "desc=%s" % desc, "overdue=%s" % ("yes" if s.get("overdue") else "no"),
          "segments=%s" % len(segs)]
 print("|".join(str(p) for p in parts))
 '
@@ -376,6 +378,7 @@ server_session_get() {  # sets SRV_*; returns 1 if no endpoint, 2 if none active
     SRV_REMAINING=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^remaining=//p")
     SRV_SOURCE=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^source=//p")
     SRV_TASK=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^task=//p")
+    SRV_DESC=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^desc=//p")
     SRV_OVERDUE=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^overdue=//p")
     SRV_SEGMENTS=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^segments=//p")
     return 0
@@ -539,9 +542,9 @@ cmd_status() {
         local where=""
         [ "$SRV_SOURCE" != "$(machine_label)" ] && where=" on $SRV_SOURCE"
         if [ "$SRV_OVERDUE" = "yes" ]; then
-            echo "Active session$where: task $SRV_TASK — finished (run 'dwt log' to record it; $SRV_SEGMENTS segment(s))"
+            echo "Active session$where: ${SRV_DESC:-task $SRV_TASK} (task $SRV_TASK) — finished (run 'dwt log' to record it; $SRV_SEGMENTS segment(s))"
         else
-            echo "Active session$where: task $SRV_TASK — $(pretty_duration "$SRV_REMAINING") remaining ($SRV_SEGMENTS segment(s))"
+            echo "Active session$where: ${SRV_DESC:-task $SRV_TASK} (task $SRV_TASK) — $(pretty_duration "$SRV_REMAINING") remaining ($SRV_SEGMENTS segment(s))"
         fi
     elif [ "$srv_rc" = 2 ]; then
         # the server is authoritative: no active session anywhere
