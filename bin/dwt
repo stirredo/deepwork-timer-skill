@@ -328,17 +328,38 @@ t = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("task") or {}
 print(t.get("id"))
 ')
 
+    # API quirk: POST /api/tasks never extracts #skill tags (only the update
+    # path calls extractEstAndSkills), so re-PATCH the same description to
+    # make the server attach the skills. Must come BEFORE the estimate PATCH:
+    # description extraction resets estimated_time when no @2h marker exists.
+    local skills_attached
+    api PATCH "/tasks/$task_id" "$(py '
+import json, sys
+print(json.dumps({"description": sys.argv[1]}))
+' "$description")"
+    check_status
+    skills_attached=$(py '
+import json, os
+t = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("task") or {}
+print(", ".join(sorted(tag.get("name", "?") for tag in (t.get("tags") or []))))
+')
+
     # API quirk: POST /api/tasks validates estimated_time but ignores it, and the
     # field's unit is MINUTES (the web UI sends hours*60+minutes). So we convert
     # seconds -> minutes and apply the estimate with a follow-up PATCH.
+    local extra=""
     if [ -n "$estimate" ]; then
         local est_minutes=$(( (estimate + 59) / 60 ))
         api PATCH "/tasks/$task_id" "{\"estimated_time\": $est_minutes}"
         check_status
-        echo "Created task $task_id: $description (estimate: ${est_minutes}m)"
-    else
-        echo "Created task $task_id: $description"
+        extra=" (estimate: ${est_minutes}m)"
     fi
+    if [ -n "$skills_attached" ]; then
+        extra="$extra (skills: $skills_attached)"
+    elif printf '%s' "$description" | grep -q '#'; then
+        extra="$extra (warning: no matching skills found — #tags only attach to skills that already exist on deepworktimer.com)"
+    fi
+    echo "Created task $task_id: $description$extra"
 }
 
 cmd_done() {

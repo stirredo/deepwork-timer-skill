@@ -38,7 +38,7 @@ missing/expired — see Onboarding below.
 | `dwt whoami` | Authenticated user (name, email, timezone, pomodoro settings). |
 | `dwt projects` | List projects (id, name). |
 | `dwt tasks [--project <id>]` | List tasks; without `--project`, the unassigned ones. Subtasks indented. |
-| `dwt add "<desc>" [--project <id>] [--estimate <seconds>]` | Create a task. `#skill` words in the description become skill tags. |
+| `dwt add "<desc>" [--project <id>] [--estimate <seconds>]` | Create a task. `#skill` words in the description become skill tags — but ONLY skills that already exist on the account attach (exact name match; the CLI warns when a `#tag` matched nothing). Existing skill names use underscores (e.g. `product_strategy`); `product-development` (id 587) exists for Claude-supervised work. Create missing skills via `POST /api/skills` with `{"skillName": "...", "parent_id": <optional>}`. |
 | `dwt done <task_id>` | Mark a task completed. |
 | `dwt start <task_id> [--minutes <n>]` | Start a SERVER session on the task (may take over — see above). `--minutes` sets a custom length (1–240; default is the account's pomodoro length). |
 | `dwt switch <task_id>` | Re-point the running session at another task; one pomodoro, honestly split per segment. |
