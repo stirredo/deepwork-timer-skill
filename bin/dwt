@@ -96,6 +96,14 @@ api() {
     export API_BODY
 }
 
+# Session mutations must not leave the statusline/hook cache stale (it is
+# otherwise only refreshed every 60s): drop it and repopulate in the
+# background so the 🍅 segment and [dwt] context line update immediately.
+refresh_statusline_cache() {
+    rm -f "$CONFIG_DIR/statusline-cache"
+    ( "$(cd "$(dirname "$0")" && pwd)/dwt-statusline" >/dev/null 2>&1 & ) 2>/dev/null || true
+}
+
 PY_MESSAGE='
 import json, os, sys
 try:
@@ -320,17 +328,38 @@ t = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("task") or {}
 print(t.get("id"))
 ')
 
+    # API quirk: POST /api/tasks never extracts #skill tags (only the update
+    # path calls extractEstAndSkills), so re-PATCH the same description to
+    # make the server attach the skills. Must come BEFORE the estimate PATCH:
+    # description extraction resets estimated_time when no @2h marker exists.
+    local skills_attached
+    api PATCH "/tasks/$task_id" "$(py '
+import json, sys
+print(json.dumps({"description": sys.argv[1]}))
+' "$description")"
+    check_status
+    skills_attached=$(py '
+import json, os
+t = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("task") or {}
+print(", ".join(sorted(tag.get("name", "?") for tag in (t.get("tags") or []))))
+')
+
     # API quirk: POST /api/tasks validates estimated_time but ignores it, and the
     # field's unit is MINUTES (the web UI sends hours*60+minutes). So we convert
     # seconds -> minutes and apply the estimate with a follow-up PATCH.
+    local extra=""
     if [ -n "$estimate" ]; then
         local est_minutes=$(( (estimate + 59) / 60 ))
         api PATCH "/tasks/$task_id" "{\"estimated_time\": $est_minutes}"
         check_status
-        echo "Created task $task_id: $description (estimate: ${est_minutes}m)"
-    else
-        echo "Created task $task_id: $description"
+        extra=" (estimate: ${est_minutes}m)"
     fi
+    if [ -n "$skills_attached" ]; then
+        extra="$extra (skills: $skills_attached)"
+    elif printf '%s' "$description" | grep -q '#'; then
+        extra="$extra (warning: no matching skills found — #tags only attach to skills that already exist on deepworktimer.com)"
+    fi
+    echo "Created task $task_id: $description$extra"
 }
 
 cmd_done() {
@@ -421,6 +450,7 @@ print(json.loads(os.environ["API_BODY"]).get("took_over") or "")
 ')
         [ -n "$took" ] && echo "note: took over the session that was running on: $took" >&2
         rm -f "$SESSION_FILE"
+        refresh_statusline_cache
         echo "Session started on task $task_id (server-side — visible from every machine; run dwt log or dwt switch <id> next)"
         return 0
     fi
@@ -447,6 +477,7 @@ print(json.dumps({"task_id": int(sys.argv[1])}))
     api POST "/session/switch" "$body"
     [ "$API_STATUS" = "404" ] && die "no active server session (or the server predates sessions). Run: dwt start <task_id>"
     check_status
+    refresh_statusline_cache
     echo "Switched the active session to task $task_id — time keeps accruing in the same pomodoro."
 }
 
@@ -456,6 +487,7 @@ cmd_abandon() {
     [ "$API_STATUS" = "404" ] && { rm -f "$SESSION_FILE"; echo "No server session; cleared any local one."; return 0; }
     check_status
     rm -f "$SESSION_FILE"
+    refresh_statusline_cache
     echo "Session abandoned — nothing logged."
 }
 
@@ -536,6 +568,7 @@ cmd_log() {
         if server_session_get; then
             api POST "/session/complete"
             check_status
+            refresh_statusline_cache
             py '
 import json, os
 d = json.loads(os.environ["API_BODY"])
@@ -579,6 +612,7 @@ print(json.dumps({"time": secs, "tasks": [{"id": task, "effort_time": secs}]}))
     if [ "$have_session" = 1 ] && [ "$task" = "$SESSION_TASK_ID" ]; then
         rm -f "$SESSION_FILE"
     fi
+    refresh_statusline_cache
     echo "Logged $(pretty_duration "$seconds") on task $task."
 }
 
