@@ -92,8 +92,11 @@ fi
 ends=${state%%	*}
 rest=${state#*	}
 tid=${rest%%	*}
-label=${rest#*	}
-if [ "$label" = "$rest" ]; then tid=""; fi   # legacy 2-field cache
+rest2=${rest#*	}
+src_dev=${rest2%%	*}
+label=${rest2#*	}
+if [ "$label" = "$rest2" ]; then src_dev=""; label=$rest2; fi  # legacy cache
+case "$tid" in (*[!0-9]*) tid="" ;; esac
 [ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
 now=$(date +%s)
 left=$(( ends - now ))
@@ -120,7 +123,14 @@ if [ "$left" -le 0 ]; then
 fi
 
 # ----- arbiter: steer the active segment toward this window's task -------
+# Sessions owned by another device (phone at the gym) are PROPOSED, never
+# auto-switched — one remote prompt must not hijack a workout's tracking.
 arbiter_note=""
+this_dev=$(hostname -s 2>/dev/null || echo dwt)
+if [ -n "$mapped" ] && [ -n "$tid" ] && [ "$mapped" != "$tid" ] && [ -n "$src_dev" ] && [ "$src_dev" != "$this_dev" ]; then
+    echo "[dwt] active session: '$label' — $(( left / 60 )):$(printf '%02d' $(( left % 60 ))) left, running from '$src_dev' (another device). This window maps to task $mapped: if the user is back working HERE, propose \`dwt switch $mapped\`; if they are mid-workout/away, leave the session alone."
+    exit 0
+fi
 if [ -n "$mapped" ] && [ -n "$tid" ] && [ "$mapped" != "$tid" ]; then
     # one switch at a time across all windows, at most one per 60s
     if mkdir "$CFG/arbiter.lock" 2>/dev/null; then
