@@ -70,8 +70,13 @@ when Claude does the execution. Follow this loop:
 2. **While working**, the statusline shows the live session. When the
    conversation's focus shifts to a different effort, suggest `dwt switch`
    to an existing task or propose a new one (same one-line format).
-3. **When the session goes overdue or work wraps**, run `dwt log`, report
-   what was logged, and offer to start the next one if work continues.
+3. **Overdue sessions mostly handle themselves**: when the user prompts a
+   mapped/latched window, the hook auto-logs the finished pomodoro and
+   starts the next one (continuous logging — breaks are not enforced
+   during machine-work). Only act manually when the hook line says
+   OVERDUE (unmapped window or foreign-device session): then run
+   `dwt log`, report, and offer the next one. **When work wraps**, log or
+   abandon so the auto-relog chain stops cleanly.
 4. Prefer the CLI over raw API calls — including custom session lengths
    (`dwt start <id> --minutes <n>`).
 

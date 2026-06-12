@@ -100,6 +100,21 @@ left=$(( ends - now ))
 
 if [ "$left" -le 0 ]; then
     over=$(( -left ))
+    # Continuous logging: the user is prompting a mapped/latched window, so
+    # work demonstrably continues — log the finished pomodoro and roll
+    # straight into the next one. No ceremony, no break enforcement (breaks
+    # are a client-side ritual; machine-work days don't need the chunk
+    # boundary to be visible). dwt log refuses foreign-device sessions, so
+    # a phone-owned session falls through to the advisory line.
+    if [ -n "$mapped" ] && mkdir "$CFG/arbiter.lock" 2>/dev/null; then
+        if "$BIN/dwt" log >/dev/null 2>&1; then
+            ( "$BIN/dwt" start "$mapped" >/dev/null 2>&1 & ) 2>/dev/null
+            rmdir "$CFG/arbiter.lock" 2>/dev/null
+            echo "[dwt] pomodoro on '$label' finished while you worked — auto-logged it and started a fresh session on task $mapped (continuous logging; tell Claude to \`dwt abandon\` when wrapping up)"
+            exit 0
+        fi
+        rmdir "$CFG/arbiter.lock" 2>/dev/null
+    fi
     echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label' — propose \`dwt log\` (record it) or \`dwt abandon\`, or \`dwt start\` a fresh one if work continues"
     exit 0
 fi
