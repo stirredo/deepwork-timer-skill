@@ -24,20 +24,43 @@ BIN="$(cd "$(dirname "$0")" && pwd)"
 HOOK_JSON=""
 [ ! -t 0 ] && HOOK_JSON=$(cat 2>/dev/null || true)
 
-# resolve this window's mapped task via longest-prefix match on cwd
-mapped=""
-if [ -s "$CFG/taskmap" ]; then
-    mapped=$(HOOK_JSON="$HOOK_JSON" python3 -c '
-import json, os
-cwd = ""
+# Resolve this window's task: an explicit session latch (dwt latch) wins
+# over the cwd map (longest-prefix). Also breadcrumb the prompting
+# session's id so `dwt latch` knows which window the user last spoke to.
+mapped=$(HOOK_JSON="$HOOK_JSON" python3 -c '
+import json, os, time
+cfg = os.path.expanduser("~/.deepworktimer")
+payload = {}
 try:
-    cwd = json.loads(os.environ.get("HOOK_JSON") or "{}").get("cwd") or ""
+    payload = json.loads(os.environ.get("HOOK_JSON") or "{}")
 except Exception:
     pass
-cwd = cwd or os.environ.get("PWD", "")
+cwd = payload.get("cwd") or os.environ.get("PWD", "")
+sid = payload.get("session_id") or ""
+
+# breadcrumb: the most recent prompt came from this window
+if sid:
+    try:
+        with open(os.path.join(cfg, "last-prompt"), "w") as f:
+            f.write("{}\t{}\n".format(sid, cwd))
+    except Exception:
+        pass
+
+# 1) session latch
+latched = ""
+try:
+    with open(os.path.join(cfg, "latches")) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 2 and parts[0] == sid:
+                latched = parts[1]
+except Exception:
+    pass
+
+# 2) cwd map (longest prefix)
 best = ("", "")
 try:
-    with open(os.path.expanduser("~/.deepworktimer/taskmap")) as f:
+    with open(os.path.join(cfg, "taskmap")) as f:
         for line in f:
             parts = line.rstrip("\n").split("\t", 1)
             if len(parts) != 2:
@@ -47,9 +70,9 @@ try:
                 best = (tid, path)
 except Exception:
     pass
-print(best[0])
+
+print(latched or best[0])
 ' 2>/dev/null)
-fi
 
 # trigger the same refresh logic the statusline uses
 "$BIN/dwt-statusline" >/dev/null 2>&1
