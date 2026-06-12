@@ -276,15 +276,17 @@ else:
 
 cmd_tasks() {
     require_token
-    local project=""
+    local project="" later=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --project) project="${2:?--project needs a value}"; shift 2 ;;
+            --later)   later=1; shift ;;
             *) die "unexpected argument: $1" ;;
         esac
     done
-    local path="/tasks"
-    [ -n "$project" ] && path="/tasks?project_id=$project"
+    local path="/tasks" sep='?'
+    [ -n "$project" ] && { path="/tasks?project_id=$project"; sep='&'; }
+    [ "$later" = 1 ] && path="$path${sep}snoozed=1"
     api GET "$path"
     check_status
     py '
@@ -293,7 +295,9 @@ tasks = (json.loads(os.environ["API_BODY"]).get("data") or {}).get("tasks") or [
 def walk(items, depth=0):
     for t in items:
         mark = "x" if t.get("completed") else " "
-        print("{:>6}  [{}]   {}{}".format(t["id"], mark, "  " * depth, t.get("description") or ""))
+        wake = t.get("snoozed_until")
+        wake = "  (wakes {})".format(wake[:16].replace("T", " ")) if wake else ""
+        print("{:>6}  [{}]   {}{}{}".format(t["id"], mark, "  " * depth, t.get("description") or "", wake))
         walk(t.get("children") or [], depth + 1)
 if not tasks:
     print("(no tasks)")
@@ -710,6 +714,44 @@ cmd_latch() {
     echo "Latched session $sid -> task $1 (outranks the cwd map for this window)"
 }
 
+# hide a task from the default lists until a wake time ("show up after
+# X"): dwt snooze <id> 3d|5h|45m|<ISO date>, or --clear to wake it now.
+cmd_snooze() {
+    require_token
+    local task_id="${1:-}" when="${2:-}"
+    [ -n "$task_id" ] || die "usage: dwt snooze <task_id> <3d|5h|45m|YYYY-MM-DD[THH:MM]>  (or: dwt snooze <task_id> --clear)"
+    local body
+    if [ "$when" = "--clear" ]; then
+        body='{"snoozed_until": null}'
+    else
+        [ -n "$when" ] || die "usage: dwt snooze <task_id> <3d|5h|45m|YYYY-MM-DD[THH:MM]>  (or --clear)"
+        body=$(py '
+import datetime, json, re, sys
+w = sys.argv[1]
+m = re.fullmatch(r"(\d+)([mhd])", w)
+if m:
+    n, unit = int(m.group(1)), m.group(2)
+    delta = {"m": "minutes", "h": "hours", "d": "days"}[unit]
+    ts = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(**{delta: n})
+else:
+    try:
+        ts = datetime.datetime.fromisoformat(w)
+    except ValueError:
+        sys.exit("dwt: cannot parse \"{}\" — use 3d / 5h / 45m or an ISO date".format(w))
+    if ts.tzinfo is None:
+        ts = ts.astimezone()
+print(json.dumps({"snoozed_until": ts.isoformat()}))
+' "$when") || exit 1
+    fi
+    api PATCH "/tasks/$task_id" "$body"
+    check_status
+    if [ "$when" = "--clear" ]; then
+        echo "Task $task_id is awake — back in the default lists."
+    else
+        echo "Task $task_id snoozed — hidden until $(py 'import json,sys; print(json.loads(sys.argv[1])["snoozed_until"])' "$body"). See it with: dwt tasks --later"
+    fi
+}
+
 cmd_status() {
     require_token
     local srv_rc
@@ -793,6 +835,7 @@ case "$cmd" in
     statusline-install) cmd_statusline_install "$@" ;;
     hooks-install) cmd_hooks_install "$@" ;;
     map)      cmd_map "$@" ;;
+    snooze)   cmd_snooze "$@" ;;
     latch)    cmd_latch "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
