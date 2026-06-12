@@ -542,9 +542,11 @@ cmd_status() {
         local where=""
         [ "$SRV_SOURCE" != "$(machine_label)" ] && where=" on $SRV_SOURCE"
         if [ "$SRV_OVERDUE" = "yes" ]; then
-            echo "Active session$where: ${SRV_DESC:-task $SRV_TASK} (task $SRV_TASK) — finished (run 'dwt log' to record it; $SRV_SEGMENTS segment(s))"
+            label="task $SRV_TASK"; [ -n "$SRV_DESC" ] && label="$SRV_DESC (task $SRV_TASK)"
+            echo "Active session$where: $label — finished (run 'dwt log' to record it; $SRV_SEGMENTS segment(s))"
         else
-            echo "Active session$where: ${SRV_DESC:-task $SRV_TASK} (task $SRV_TASK) — $(pretty_duration "$SRV_REMAINING") remaining ($SRV_SEGMENTS segment(s))"
+            label="task $SRV_TASK"; [ -n "$SRV_DESC" ] && label="$SRV_DESC (task $SRV_TASK)"
+            echo "Active session$where: $label — $(pretty_duration "$SRV_REMAINING") remaining ($SRV_SEGMENTS segment(s))"
         fi
     elif [ "$srv_rc" = 2 ]; then
         # the server is authoritative: no active session anywhere
