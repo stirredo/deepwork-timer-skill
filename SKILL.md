@@ -41,6 +41,7 @@ missing/expired — see Onboarding below.
 | `dwt add "<desc>" [--project <id>] [--estimate <seconds>]` | Create a task. `#skill` words in the description become skill tags — but ONLY skills that already exist on the account attach (exact name match; the CLI warns when a `#tag` matched nothing). Existing skill names use underscores (e.g. `product_strategy`); `product-development` (id 587) exists for Claude-supervised work. Create missing skills via `POST /api/skills` with `{"skillName": "...", "parent_id": <optional>}`. |
 | `dwt snooze <task_id> <3d\|5h\|45m\|ISO-date>` | Hide a task until its wake time ("show up after X"); `--clear` wakes it now. Requires the server-side snooze API (pomodoro.xyz PR #32+). |
 | `dwt tasks --later [--project <id>]` | List the Later bucket (snoozed tasks with wake times). |
+| `dwt repeat <task_id> <every:7d\|every:12h\|weekly:mon,thu>` | Make a task recurring: completing it records the cycle, un-completes it and re-snoozes until the next wake (one task identity — its hours accumulate); a Web Push fires when it wakes. `--clear` stops repeating. Completion-anchored `every:` is right for chores; `weekly:` for calendar rituals. |
 | `dwt done <task_id>` | Mark a task completed. |
 | `dwt start <task_id> [--minutes <n>]` | Start a SERVER session on the task (may take over — see above). `--minutes` sets a custom length (1–240; default is the account's pomodoro length). |
 | `dwt switch <task_id>` | Re-point the running session at another task; one pomodoro, honestly split per segment. |
