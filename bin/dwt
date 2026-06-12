@@ -52,6 +52,8 @@ Usage:
                                       Log a pomodoro. With no args, closes the
                                       session from "dwt start" using elapsed time.
   dwt status                          Current session + today's total focus time
+  dwt statusline-install              Append the live 🍅 segment to this
+                                      machine's Claude Code statusline
   dwt stats                           Focus time summary (today/7d/30d/365d/all)
 
 Config: ~/.deepworktimer/config (BASE_URL=https://deepworktimer.com by default)
@@ -437,6 +439,36 @@ cmd_abandon() {
     echo "Session abandoned — nothing logged."
 }
 
+cmd_statusline_install() {
+    # Wrap this machine's existing Claude Code statusline with the dwt
+    # segment, touching only ~/.claude/settings.json (idempotent).
+    python3 - <<'PYEOF'
+import json, os, sys
+
+settings_path = os.path.expanduser('~/.claude/settings.json')
+wrap = os.path.expanduser('~/.claude/skills/deepwork-timer/bin/dwt-statusline-wrap')
+
+settings = {}
+if os.path.exists(settings_path):
+    with open(settings_path) as f:
+        settings = json.load(f)
+
+current = (settings.get('statusLine') or {}).get('command', '')
+if wrap in current or 'dwt-statusline-wrap' in current:
+    print('statusline already wrapped — nothing to do')
+    sys.exit(0)
+
+new_cmd = wrap + (' ' + current if current else '')
+settings['statusLine'] = {'type': 'command', 'command': new_cmd}
+
+with open(settings_path + '.tmp', 'w') as f:
+    json.dump(settings, f, indent=2)
+os.replace(settings_path + '.tmp', settings_path)
+print('statusline wrapped: ' + new_cmd)
+print('(your original statusline still renders; the dwt segment is appended)')
+PYEOF
+}
+
 cmd_log() {
     require_token
     local task="" minutes=""
@@ -577,6 +609,7 @@ case "$cmd" in
     switch)   cmd_switch "$@" ;;
     abandon)  cmd_abandon "$@" ;;
     log)      cmd_log "$@" ;;
+    statusline-install) cmd_statusline_install "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
     ""|-h|--help|help) usage ;;

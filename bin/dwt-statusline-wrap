@@ -1,0 +1,38 @@
+#!/bin/sh
+# Compose the Deep Work Timer segment with whatever statusline this machine
+# already uses, without modifying that script.
+#
+# Usage (in ~/.claude/settings.json):
+#   "statusLine": {
+#     "type": "command",
+#     "command": "~/.claude/skills/deepwork-timer/bin/dwt-statusline-wrap <original command...>"
+#   }
+#
+# Claude Code pipes its status JSON to this script; the JSON is forwarded to
+# the wrapped command unchanged, and the 🍅 segment (if a session is active)
+# is appended to its output. With no wrapped command, only the segment (and
+# a minimal default line) is printed. `dwt statusline-install` sets this up.
+
+input=$(cat)
+
+if [ $# -gt 0 ]; then
+    inner=$(printf '%s' "$input" | "$@" 2>/dev/null)
+else
+    # minimal fallback statusline when the machine had none
+    inner=$(printf '%s' "$input" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print("{}  {}".format(d.get("model", {}).get("display_name", ""), d.get("cwd", "")), end="")
+except Exception:
+    pass
+' 2>/dev/null)
+fi
+
+seg=$("$(dirname "$0")/dwt-statusline" 2>/dev/null)
+
+if [ -n "$seg" ]; then
+    printf '%s  %s' "$inner" "$seg"
+else
+    printf '%s' "$inner"
+fi

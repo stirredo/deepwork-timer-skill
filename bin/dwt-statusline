@@ -1,0 +1,54 @@
+#!/bin/sh
+# Emit a compact Deep Work Timer segment for the Claude Code statusline.
+# Prints nothing when no session is active, so the statusline stays clean.
+#
+# The statusline re-renders constantly, so this NEVER hits the API on the
+# hot path: a cache file holds the session's ends_at + task label, refreshed
+# in the background at most every 60s. Remaining time is computed locally.
+
+CACHE="$HOME/.deepworktimer/statusline-cache"
+TOKEN_FILE="$HOME/.deepworktimer/token"
+BASE_URL="https://deepworktimer.com"
+[ -f "$HOME/.deepworktimer/config" ] && . "$HOME/.deepworktimer/config" 2>/dev/null
+
+[ -f "$TOKEN_FILE" ] || exit 0
+
+now=$(date +%s)
+
+refresh() {
+    token=$(cat "$TOKEN_FILE" 2>/dev/null) || return
+    resp=$(curl -sf -m 3 "$BASE_URL/api/session" \
+        -H "Authorization: Bearer $token" -H "Accept: application/json" 2>/dev/null) || return
+    printf '%s' "$resp" | python3 -c '
+import json, sys, datetime
+try:
+    s = json.load(sys.stdin).get("session")
+except Exception:
+    sys.exit(0)
+if not s or s.get("completed_at") or s.get("abandoned_at"):
+    print("none")
+    sys.exit(0)
+ends = datetime.datetime.fromisoformat(s["ends_at"]).timestamp()
+task = (s.get("segments") or [{}])[-1].get("task_id", "?")
+print("{} {}".format(int(ends), task))
+' > "$CACHE.tmp" 2>/dev/null && mv "$CACHE.tmp" "$CACHE"
+}
+
+# refresh in the background when stale; never block the statusline
+if [ ! -f "$CACHE" ] || [ $(( now - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) )) -gt 60 ]; then
+    ( refresh ) >/dev/null 2>&1 &
+fi
+
+[ -f "$CACHE" ] || exit 0
+state=$(cat "$CACHE" 2>/dev/null)
+[ "$state" = "none" ] && exit 0
+set -- $state
+ends=$1; task=$2
+[ -n "$ends" ] || exit 0
+
+left=$(( ends - now ))
+if [ "$left" -le 0 ]; then
+    printf '🍅 task %s OVERDUE — dwt log to record' "$task"
+else
+    printf '🍅 task %s · %d:%02d left' "$task" $(( left / 60 )) $(( left % 60 ))
+fi
