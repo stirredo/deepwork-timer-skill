@@ -46,6 +46,7 @@ missing/expired — see Onboarding below.
 | `dwt log` | Complete the running server session → records the pomodoro with its per-task splits (server computes them). `--task <id> --minutes <n>` logs a fixed direct pomodoro instead. |
 | `dwt status` | Active session (task, remaining, segments, machine label) + today's total. |
 | `dwt stats` | Today / 7d / 30d / 365d / all-time, best day, daily average. |
+| `dwt map [<task_id>] [path]` | Map a working directory to a task for the multi-session arbiter (below). No args lists mappings; `--remove [path]` deletes; path defaults to the current directory; longest-prefix match wins. |
 | `dwt statusline-install` | Wrap this machine's Claude Code statusline so a live `🍅 task · mm:ss left` segment is appended. Idempotent; only edits `~/.claude/settings.json` — every machine keeps its own statusline. |
 | `dwt hooks-install` | Add a UserPromptSubmit hook that injects one line of live session state (`[dwt] …`) into Claude's context on every prompt. This is what powers the tracking loop below — act on those lines without being asked. |
 
@@ -70,6 +71,30 @@ when Claude does the execution. Follow this loop:
    what was logged, and offer to start the next one if work continues.
 4. Prefer the CLI over raw API calls — including custom session lengths
    (`dwt start <id> --minutes <n>`).
+
+## Multiple Claude Code windows (the arbiter)
+
+The account still has ONE session — that models the user's singular
+attention, and totals must stay wall-clock true (the server rejects
+overlapping pomodoros). When the user runs several Claude Code windows at
+once, the `dwt-context` hook arbitrates: each prompt is treated as the live
+signal of where the user's attention is. If the prompting window's cwd is
+mapped (`dwt map <task_id> <path>`) and the active segment points at a
+different task, the hook switches the segment to this window's task
+(60s debounce, lock shared across windows). Sequential segments then split
+each pomodoro honestly across every workstream the user actually steered.
+
+What Claude should do:
+
+- On first substantive work in a project, check `dwt map` — if the workdir
+  is unmapped, propose mapping it to the tracking task being created
+  (`dwt map <task_id>`). One mapping per project dir; subdirs inherit
+  unless mapped more specifically.
+- When the hook line says the arbiter switched or debounced, just continue —
+  no action needed; that is the system working.
+- Per-task times become fractional shares of real time. This is by design:
+  supervising three agents for 25 minutes is 25 minutes of attention,
+  split — never 75 minutes logged.
 
 ## Config
 

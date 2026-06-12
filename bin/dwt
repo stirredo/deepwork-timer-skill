@@ -53,6 +53,10 @@ Usage:
   dwt log [--task <id>] [--minutes <n>]
                                       Log a pomodoro. With no args, closes the
                                       session from "dwt start" using elapsed time.
+  dwt map [<task_id>] [path]          Map a working directory to a task for the
+                                      multi-session arbiter (no args: list maps;
+                                      --remove [path] to delete; path defaults
+                                      to the current directory)
   dwt status                          Current session + today's total focus time
   dwt statusline-install              Append the live 🍅 segment to this
                                       machine's Claude Code statusline
@@ -616,6 +620,46 @@ print(json.dumps({"time": secs, "tasks": [{"id": task, "effort_time": secs}]}))
     echo "Logged $(pretty_duration "$seconds") on task $task."
 }
 
+# map a working directory to a task id; the dwt-context hook uses this to
+# steer the active session's segment toward whichever Claude Code window
+# the user is actually prompting in (see SKILL.md "Multiple sessions").
+cmd_map() {
+    local taskmap="$CONFIG_DIR/taskmap"
+    if [ $# -eq 0 ]; then
+        if [ -s "$taskmap" ]; then
+            printf 'TASK    PATH\n'
+            while IFS=$'\t' read -r tid tpath; do
+                printf '%-7s %s\n' "$tid" "$tpath"
+            done < "$taskmap"
+        else
+            echo "(no mappings — add one with: dwt map <task_id> [path])"
+        fi
+        return 0
+    fi
+
+    local remove=0 task="" target=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --remove) remove=1; shift ;;
+            *) if [ -z "$task" ] && [ "$remove" = 0 ]; then task="$1"; else target="$1"; fi; shift ;;
+        esac
+    done
+    target="${target:-$PWD}"
+    target=$(cd "$target" 2>/dev/null && pwd -P) || die "no such directory: $target"
+
+    local tmp="$taskmap.tmp"
+    { [ -f "$taskmap" ] && grep -v "	$target\$" "$taskmap"; } > "$tmp" || true
+    if [ "$remove" = 1 ]; then
+        mv "$tmp" "$taskmap"
+        echo "Unmapped $target"
+        return 0
+    fi
+    case "$task" in (*[!0-9]*|'') die "usage: dwt map <task_id> [path]  (or: dwt map --remove [path])" ;; esac
+    printf '%s\t%s\n' "$task" "$target" >> "$tmp"
+    mv "$tmp" "$taskmap"
+    echo "Mapped $target -> task $task (longest-prefix match wins across mappings)"
+}
+
 cmd_status() {
     require_token
     local srv_rc
@@ -698,6 +742,7 @@ case "$cmd" in
     log)      cmd_log "$@" ;;
     statusline-install) cmd_statusline_install "$@" ;;
     hooks-install) cmd_hooks_install "$@" ;;
+    map)      cmd_map "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
     ""|-h|--help|help) usage ;;
