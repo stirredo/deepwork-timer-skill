@@ -84,12 +84,25 @@ different task, the hook switches the segment to this window's task
 (60s debounce, lock shared across windows). Sequential segments then split
 each pomodoro honestly across every workstream the user actually steered.
 
+Two binding levels, latch outranking map:
+
+- `dwt map <task_id> [path]` — directory → task (longest prefix; subdirs
+  inherit). The default; survives across sessions.
+- `dwt latch <task_id>` — THIS Claude session → task. Binds to the window
+  the user most recently prompted (hook breadcrumb), so run it right after
+  the user assigns/approves this window's task. This is how two windows in
+  the SAME directory track different tasks. `--clear` unbinds; no args
+  lists. Latches die with the session; maps persist.
+
 What Claude should do:
 
 - On first substantive work in a project, check `dwt map` — if the workdir
   is unmapped, propose mapping it to the tracking task being created
   (`dwt map <task_id>`). One mapping per project dir; subdirs inherit
   unless mapped more specifically.
+- When this window's work is a DIFFERENT task than the directory's mapping
+  (or another window shares the directory), `dwt latch <task_id>` after the
+  user confirms the tracking line.
 - When the hook line says the arbiter switched or debounced, just continue —
   no action needed; that is the system working.
 - Per-task times become fractional shares of real time. This is by design:

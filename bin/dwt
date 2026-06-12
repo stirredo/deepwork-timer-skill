@@ -57,6 +57,8 @@ Usage:
                                       multi-session arbiter (no args: list maps;
                                       --remove [path] to delete; path defaults
                                       to the current directory)
+  dwt latch [<task_id>]               Latch THIS Claude session to a task (outranks
+                                      dwt map; --clear unbinds; no args lists)
   dwt status                          Current session + today's total focus time
   dwt statusline-install              Append the live 🍅 segment to this
                                       machine's Claude Code statusline
@@ -672,6 +674,42 @@ cmd_map() {
     echo "Mapped $target -> task $task (longest-prefix match wins across mappings)"
 }
 
+# latch a task onto the Claude Code session the user most recently
+# prompted (per the dwt-context breadcrumb). A latch outranks the cwd map
+# in the arbiter — it is how two windows in the SAME directory track
+# different tasks.
+cmd_latch() {
+    local latches="$CONFIG_DIR/latches" last="$CONFIG_DIR/last-prompt"
+    if [ $# -eq 0 ]; then
+        if [ -s "$latches" ]; then
+            printf 'SESSION                                TASK\n'
+            while IFS=$'\t' read -r sid tid _; do
+                printf '%-38s %s\n' "$sid" "$tid"
+            done < "$latches"
+        else
+            echo "(no latches — run: dwt latch <task_id> right after the user prompts the window to bind)"
+        fi
+        return 0
+    fi
+
+    [ -s "$last" ] || die "no prompt breadcrumb yet — the dwt-context hook must fire once (user prompts this window) before latching"
+    local sid
+    sid=$(cut -f1 "$last")
+    [ -n "$sid" ] || die "breadcrumb is empty — prompt this window once and retry"
+
+    local tmp="$latches.tmp"
+    { [ -f "$latches" ] && grep -v "^$sid	" "$latches"; } > "$tmp" || true
+    if [ "$1" = "--clear" ]; then
+        mv "$tmp" "$latches"
+        echo "Unlatched session $sid"
+        return 0
+    fi
+    case "$1" in (*[!0-9]*|'') die "usage: dwt latch <task_id>   (or: dwt latch --clear; no args lists latches)" ;; esac
+    printf '%s\t%s\t%s\n' "$sid" "$1" "$(date +%s)" >> "$tmp"
+    mv "$tmp" "$latches"
+    echo "Latched session $sid -> task $1 (outranks the cwd map for this window)"
+}
+
 cmd_status() {
     require_token
     local srv_rc
@@ -755,6 +793,7 @@ case "$cmd" in
     statusline-install) cmd_statusline_install "$@" ;;
     hooks-install) cmd_hooks_install "$@" ;;
     map)      cmd_map "$@" ;;
+    latch)    cmd_latch "$@" ;;
     status)   cmd_status "$@" ;;
     stats)    cmd_stats "$@" ;;
     ""|-h|--help|help) usage ;;
