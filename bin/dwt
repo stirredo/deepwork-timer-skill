@@ -487,6 +487,11 @@ print(json.dumps({"task_id": int(sys.argv[1])}))
 
 cmd_abandon() {
     require_token
+    local force=0
+    [ "${1:-}" = "--force" ] && force=1
+    if [ "$force" != 1 ] && server_session_get && [ "$SRV_SOURCE" != "$(machine_label)" ]; then
+        die "active session was started on '$SRV_SOURCE', not this machine — abandoning it from here would silently kill the user's timer there. Re-run with --force only if the user explicitly asks."
+    fi
     api DELETE "/session"
     [ "$API_STATUS" = "404" ] && { rm -f "$SESSION_FILE"; echo "No server session; cleared any local one."; return 0; }
     check_status
@@ -558,11 +563,12 @@ PYEOF
 
 cmd_log() {
     require_token
-    local task="" minutes=""
+    local task="" minutes="" force=0
     while [ $# -gt 0 ]; do
         case "$1" in
             --task)    task="${2:?--task needs a value}"; shift 2 ;;
             --minutes) minutes="${2:?--minutes needs a value}"; shift 2 ;;
+            --force)   force=1; shift ;;
             *) die "unexpected argument: $1" ;;
         esac
     done
@@ -570,6 +576,12 @@ cmd_log() {
     # server session takes precedence when no explicit overrides are given
     if [ -z "$task" ] && [ -z "$minutes" ]; then
         if server_session_get; then
+            # The session is shared account-wide. If another device started
+            # it (phone at the gym, another machine), the human's attention
+            # is THERE — completing it from here would cut their timer off.
+            if [ "$SRV_SOURCE" != "$(machine_label)" ] && [ "$force" != 1 ]; then
+                die "active session was started on '$SRV_SOURCE', not this machine — the user may be working there (phone/gym/other laptop). Log it from that device, let it be handled there, or re-run with --force only if the user explicitly asks."
+            fi
             api POST "/session/complete"
             check_status
             refresh_statusline_cache

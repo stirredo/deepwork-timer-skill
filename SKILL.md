@@ -96,6 +96,25 @@ What Claude should do:
   supervising three agents for 25 minutes is 25 minutes of attention,
   split — never 75 minutes logged.
 
+## When the human is elsewhere (gym, errands — the phone owns the session)
+
+Focus time measures the HUMAN's attention, which is singular: 25 minutes at
+the gym is 25 minutes on the exercise task, even while Claude keeps working
+here. Never try to also log the unsupervised stretch — the server rightly
+rejects more than wall-clock time per window, and agent output is not the
+user's practice time.
+
+Protocol:
+
+- The user starts their gym/errand task from the phone — it TAKES OVER the
+  shared session. Expected; do not fight it. Keep working without logging.
+- `dwt log` / `dwt abandon` refuse to touch a session started on another
+  device (`--force` exists for when the user explicitly asks). Don't reach
+  for --force on your own.
+- The user's first prompt back at this keyboard is the attention signal —
+  the arbiter (above) reclaims the segment automatically if the workdir is
+  mapped; otherwise propose `dwt switch`/`dwt start` for the work resuming.
+
 ## Config
 
 `~/.deepworktimer/config` — `KEY=VALUE` lines. Only key: `BASE_URL`
