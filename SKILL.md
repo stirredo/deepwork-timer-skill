@@ -74,6 +74,20 @@ when Claude does the execution. Follow this loop:
 4. Prefer the CLI over raw API calls — including custom session lengths
    (`dwt start <id> --minutes <n>`).
 
+## Contorch integration (context-orchestrator MCP)
+
+A contorch task maps to a dwt PROJECT — contorch holds the context for an
+effort; dwt measures time against it. When `get_task()` runs:
+
+- Manifest shows `Deep Work Timer project: <id>` → create granular dwt
+  tasks under that project for new work items (`dwt add "..." --project
+  <id>`), start/switch sessions on them, and `dwt done` each one as the
+  work item completes (a merged PR, a shipped fix).
+- Manifest says not linked → check `dwt projects` for a matching project,
+  create one if needed (`dwt projects --add "<name>"`), then record it via
+  the contorch `link_dwt_project()` tool so every future session inherits
+  the linkage.
+
 ## Multiple Claude Code windows (the arbiter)
 
 The account still has ONE session — that models the user's singular

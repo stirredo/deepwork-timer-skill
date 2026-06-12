@@ -42,7 +42,7 @@ Usage:
   dwt login <email> [-p <password>]   Get an API token (password prompted if -p omitted)
   dwt token <raw-token>               Save a pasted API token directly
   dwt whoami                          Show the authenticated user
-  dwt projects                        List projects (id, name)
+  dwt projects [--add <name>]         List projects (id, name) or create one
   dwt tasks [--project <id>]          List tasks (project tasks, or unassigned tasks)
   dwt add <description> [--project <id>] [--estimate <seconds>]
                                       Create a task
@@ -260,6 +260,18 @@ if s:
 
 cmd_projects() {
     require_token
+    if [ "${1:-}" = "--add" ]; then
+        local name="${2:?--add needs a project name}"
+        api POST "/projects" "$(py 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$name")"
+        check_status
+        py '
+import json, os
+d = json.loads(os.environ["API_BODY"])
+p = (d.get("data") or {}).get("project") or d.get("project") or {}
+print("Created project {}: {}".format(p.get("id", "?"), p.get("name", "")))
+'
+        return 0
+    fi
     api GET "/projects"
     check_status
     py '
