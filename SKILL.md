@@ -71,12 +71,16 @@ when Claude does the execution. Follow this loop:
    conversation's focus shifts to a different effort, suggest `dwt switch`
    to an existing task or propose a new one (same one-line format).
 3. **Overdue sessions mostly handle themselves**: when the user prompts a
-   mapped/latched window, the hook auto-logs the finished pomodoro and
-   starts the next one (continuous logging — breaks are not enforced
-   during machine-work). Only act manually when the hook line says
-   OVERDUE (unmapped window or foreign-device session): then run
-   `dwt log`, report, and offer the next one. **When work wraps**, log or
-   abandon so the auto-relog chain stops cleanly.
+   mapped/latched window AND there was recent activity (a prompt or a dwt
+   command within the idle window, default 15m), the hook auto-logs the
+   finished pomodoro and starts the next one (continuous logging — breaks
+   are not enforced during machine-work). If activity has been idle longer
+   than that, the hook does NOT auto-log — it says "no activity for Nm";
+   ask the user whether to `dwt log` (credit it) or `dwt abandon` (discard)
+   before doing either, since they were likely away. Act manually too when
+   the line says plain OVERDUE (unmapped window or foreign-device session).
+   **When work wraps**, log or abandon so the chain stops cleanly. Tune the
+   idle window with `ACTIVITY_IDLE_SECONDS` in `~/.deepworktimer/config`.
 4. Prefer the CLI over raw API calls — including custom session lengths
    (`dwt start <id> --minutes <n>`).
 
@@ -152,9 +156,11 @@ Protocol:
 
 ## Config
 
-`~/.deepworktimer/config` — `KEY=VALUE` lines. Only key: `BASE_URL`
+`~/.deepworktimer/config` — `KEY=VALUE` lines. Keys: `BASE_URL`
 (default `https://deepworktimer.com`). Point it at `http://localhost` to use a
-local dev stack. `DWT_CONFIG_DIR` env var relocates the whole config dir
+local dev stack. `ACTIVITY_IDLE_SECONDS` (default 900) — how long without a
+prompt or dwt command before an expired pomodoro stops auto-logging and the
+hook asks instead. `DWT_CONFIG_DIR` env var relocates the whole config dir
 (useful for testing without touching real credentials). Statusline cache:
 `~/.deepworktimer/statusline-cache`.
 
