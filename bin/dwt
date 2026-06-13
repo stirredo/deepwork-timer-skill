@@ -855,6 +855,13 @@ if avg:
 cmd="${1:-}"
 [ $# -gt 0 ] && shift
 
+# Activity heartbeat: a session-affecting dwt command means the agent is
+# working right now. The idle-aware hook reads this so a long autonomous
+# turn (no new prompts, but real work) still counts as continuous activity.
+case "$cmd" in
+    start|switch|log|add|done|snooze|repeat) date +%s > "$CONFIG_DIR/last-activity" 2>/dev/null || true ;;
+esac
+
 case "$cmd" in
     login)    cmd_login "$@" ;;
     token)    cmd_token "$@" ;;

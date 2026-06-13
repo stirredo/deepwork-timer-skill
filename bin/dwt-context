@@ -17,8 +17,24 @@
 CFG="$HOME/.deepworktimer"
 CACHE="$CFG/statusline-cache"
 TOKEN_FILE="$CFG/token"
+ACT_FILE="$CFG/last-activity"
 BIN="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$TOKEN_FILE" ] || exit 0
+
+# How long without a prompt OR a dwt command before the session counts as
+# abandoned rather than continuous. Past this, an expired pomodoro is NOT
+# auto-logged (we cannot claim focus the user was not present for) — the
+# hook asks instead. Default 15 min; override ACTIVITY_IDLE_SECONDS in config.
+IDLE_SECONDS=900
+[ -f "$CFG/config" ] && . "$CFG/config" 2>/dev/null
+[ -n "${ACTIVITY_IDLE_SECONDS:-}" ] && IDLE_SECONDS="$ACTIVITY_IDLE_SECONDS"
+
+# read the previous activity stamp, then mark this prompt as activity
+now_boot=$(date +%s)
+prev_activity=$(cat "$ACT_FILE" 2>/dev/null || echo 0)
+case "$prev_activity" in (''|*[!0-9]*) prev_activity=0 ;; esac
+echo "$now_boot" > "$ACT_FILE" 2>/dev/null || true
+idle=$(( now_boot - prev_activity ))
 
 # stdin carries the hook payload (JSON with "cwd"); never block on a TTY
 HOOK_JSON=""
@@ -109,7 +125,7 @@ if [ "$left" -le 0 ]; then
     # are a client-side ritual; machine-work days don't need the chunk
     # boundary to be visible). dwt log refuses foreign-device sessions, so
     # a phone-owned session falls through to the advisory line.
-    if [ -n "$mapped" ] && mkdir "$CFG/arbiter.lock" 2>/dev/null; then
+    if [ -n "$mapped" ] && [ "$idle" -le "$IDLE_SECONDS" ] && [ "$prev_activity" -gt 0 ] && mkdir "$CFG/arbiter.lock" 2>/dev/null; then
         if "$BIN/dwt" log >/dev/null 2>&1; then
             ( "$BIN/dwt" start "$mapped" >/dev/null 2>&1 & ) 2>/dev/null
             rmdir "$CFG/arbiter.lock" 2>/dev/null
@@ -117,6 +133,12 @@ if [ "$left" -le 0 ]; then
             exit 0
         fi
         rmdir "$CFG/arbiter.lock" 2>/dev/null
+    fi
+    # idle too long (or first prompt after a break): do NOT auto-credit a full
+    # pomodoro the user may not have worked — surface the gap and let them decide
+    if [ "$idle" -gt "$IDLE_SECONDS" ]; then
+        echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label', and no activity for $(( idle / 60 ))m — NOT auto-logged (you were likely away). Ask the user, then \`dwt log\` (credit it) or \`dwt abandon\` (discard); \`dwt start\` to resume tracking."
+        exit 0
     fi
     echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label' — propose \`dwt log\` (record it) or \`dwt abandon\`, or \`dwt start\` a fresh one if work continues"
     exit 0
