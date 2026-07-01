@@ -22,7 +22,17 @@ missing/expired — see Onboarding below.
 
 - **One active session per account.** Starting while another machine (or the
   phone PWA) has a session running TAKES IT OVER — the old segment is closed
-  and attributed, and `dwt start` prints a `took over` warning. Check
+  and attributed, and `dwt start` prints a `took over` warning.
+- **Foreign-session protection vs. autonomous machines.** By default a session
+  owned by ANOTHER device is protected: the hook surfaces it and proposes,
+  and `dwt log`/`dwt abandon`/auto-switch refuse it (so a laptop prompt can't
+  kill the phone's gym timer). A machine flagged **`dwt autonomous on`**
+  (`DWT_AUTONOMOUS=1` in its config) opts OUT: it owns its focus, so a
+  foreign-owned session is silently seized here (a mapped window hard-starts
+  its task on the next prompt; foreign sessions are hidden from this machine's
+  statusline). Set autonomous ON on dedicated work machines, leave it OFF
+  (default) on shared/phone-adjacent ones. The flag is per-machine (config
+  lives outside the repo). Check
   `dwt status` before starting if unsure, and always surface takeovers.
 - The session has a fixed duration (the user's pomodoro length, default 25m)
   and an `ends_at`. Past `ends_at` it is **overdue**, not recorded: nothing
@@ -50,6 +60,7 @@ missing/expired — see Onboarding below.
 | `dwt status` | Active session (task, remaining, segments, machine label) + today's total. |
 | `dwt stats` | Today / 7d / 30d / 365d / all-time, best day, daily average. |
 | `dwt map [<task_id>] [path]` | Map a working directory to a task for the multi-session arbiter (below). No args lists mappings; `--remove [path]` deletes; path defaults to the current directory; longest-prefix match wins. |
+| `dwt autonomous [on\|off\|status]` | Per-machine stance on foreign-owned sessions: `on` = this machine silently seizes them (dedicated work machine); `off` (default) = protect/defer to them. Writes `DWT_AUTONOMOUS` to the machine's config. |
 | `dwt statusline-install` | Wrap this machine's Claude Code statusline so a live `🍅 task · mm:ss left` segment is appended. Idempotent; only edits `~/.claude/settings.json` — every machine keeps its own statusline. |
 | `dwt hooks-install` | Add a UserPromptSubmit hook that injects one line of live session state (`[dwt] …`) into Claude's context on every prompt. This is what powers the tracking loop below — act on those lines without being asked. |
 

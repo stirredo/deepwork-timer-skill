@@ -96,11 +96,15 @@ print(latched or best[0])
 [ -f "$CACHE" ] || exit 0
 state=$(cat "$CACHE" 2>/dev/null)
 
+# Concrete proposal, not a bare abandon/start: resume an existing task or open
+# a new one under an existing or new project.
+PROPOSE="if substantive work is underway, propose tracking it — resume an existing task (\`dwt tasks\`) or open a new one (\`<desc> #skill @estimate\`) under an existing or new project (\`dwt projects\`); confirm the one-liner, then \`dwt start\`."
+
 if [ "$state" = "none" ] || [ -z "$state" ]; then
     if [ -n "$mapped" ]; then
         echo "[dwt] no active session — this window's workdir maps to task $mapped; if substantive work is underway propose \`dwt start $mapped\` (see deepwork-timer skill)"
     else
-        echo "[dwt] no active session — if substantive work is underway, propose a tracking task (see deepwork-timer skill)"
+        echo "[dwt] no active session — $PROPOSE"
     fi
     exit 0
 fi
@@ -116,6 +120,41 @@ case "$tid" in (*[!0-9]*) tid="" ;; esac
 [ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
 now=$(date +%s)
 left=$(( ends - now ))
+this_dev=$(hostname -s 2>/dev/null || echo dwt)
+
+# ---- autonomous work machine: SEIZE a foreign-owned session ----------------
+# DWT_AUTONOMOUS=1 opts THIS device out of the foreign-session protection: it
+# owns its focus, so a session running on another device (phone at the gym,
+# other laptop) is taken over here rather than deferred to. If this window
+# maps to a task, hard-start it (dwt start = clean takeover, new session owned
+# by this device; the other device logs its own prior time). Debounced via the
+# shared arbiter lock — at most one seize/switch per 60s, so we do not re-seize
+# every prompt in the window before the cache refreshes to this device.
+if [ "${DWT_AUTONOMOUS:-}" = "1" ] && [ -n "$src_dev" ] && [ "$src_dev" != "$this_dev" ]; then
+    if [ -n "$mapped" ]; then
+        seized=0
+        if mkdir "$CFG/arbiter.lock" 2>/dev/null; then
+            last=$(cat "$CFG/arbiter-last" 2>/dev/null || echo 0)
+            case "$last" in (*[!0-9]*|'') last=0 ;; esac
+            if [ $(( now - last )) -ge 60 ]; then
+                echo "$now" > "$CFG/arbiter-last"
+                ( "$BIN/dwt" start "$mapped" >/dev/null 2>&1 & ) 2>/dev/null
+                seized=1
+            fi
+            rmdir "$CFG/arbiter.lock" 2>/dev/null
+        fi
+        if [ "$seized" = 1 ]; then
+            echo "[dwt] (autonomous) took the account session onto this window's task $mapped — fresh pomodoro started here; '$src_dev' logs its own prior time."
+        else
+            echo "[dwt] (autonomous) seizing onto task $mapped shortly (debounced); it was running from '$src_dev'."
+        fi
+        exit 0
+    fi
+    # unmapped: cannot seize to a specific task — do NOT surface the foreign
+    # session; treat this machine as free and let the next task be proposed.
+    echo "[dwt] no active session on this machine (one runs on '$src_dev' — not surfaced; autonomous machine). $PROPOSE"
+    exit 0
+fi
 
 if [ "$left" -le 0 ]; then
     over=$(( -left ))
@@ -140,7 +179,7 @@ if [ "$left" -le 0 ]; then
         echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label', and no activity for $(( idle / 60 ))m — NOT auto-logged (you were likely away). Ask the user, then \`dwt log\` (credit it) or \`dwt abandon\` (discard); \`dwt start\` to resume tracking."
         exit 0
     fi
-    echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label' — propose \`dwt log\` (record it) or \`dwt abandon\`, or \`dwt start\` a fresh one if work continues"
+    echo "[dwt] session OVERDUE by $(( over / 60 ))m on '$label' — propose \`dwt log\` to record it; then $PROPOSE"
     exit 0
 fi
 
@@ -148,7 +187,9 @@ fi
 # Sessions owned by another device (phone at the gym) are PROPOSED, never
 # auto-switched — one remote prompt must not hijack a workout's tracking.
 arbiter_note=""
-this_dev=$(hostname -s 2>/dev/null || echo dwt)
+# (this_dev computed above.) Non-autonomous machines still defer to a
+# foreign-owned session here — protection is the default; DWT_AUTONOMOUS
+# opted out earlier.
 if [ -n "$mapped" ] && [ -n "$tid" ] && [ "$mapped" != "$tid" ] && [ -n "$src_dev" ] && [ "$src_dev" != "$this_dev" ]; then
     echo "[dwt] active session: '$label' — $(( left / 60 )):$(printf '%02d' $(( left % 60 ))) left, running from '$src_dev' (another device). This window maps to task $mapped: if the user is back working HERE, propose \`dwt switch $mapped\`; if they are mid-workout/away, leave the session alone."
     exit 0
