@@ -32,10 +32,12 @@ ends = datetime.datetime.fromisoformat(s["ends_at"]).timestamp()
 seg = (s.get("segments") or [{}])[-1]
 label = seg.get("task_description") or "task {}".format(seg.get("task_id", "?"))
 label = label.split("#")[0].strip()[:32] or "task {}".format(seg.get("task_id", "?"))
-# cache format: ends \t task_id \t source \t label — task id and source
-# device feed the dwt-context arbiter (multi-session segment steering;
-# sessions owned by another device are proposed, never auto-switched)
-print("{}\t{}\t{}\t{}".format(int(ends), seg.get("task_id") or "", (s.get("source") or "").replace("\t", " "), label))
+# cache format: ends \t task_id \t src \t label. The 3rd field is the
+# device accruing the OPEN SEGMENT (falls back to the session starter for
+# legacy src-less segments) — ownership follows attention, so a laptop
+# that latched in via dwt switch owns the display and the paperwork.
+src = (seg.get("src") or s.get("source") or "").replace("\t", " ")
+print("{}\t{}\t{}\t{}".format(int(ends), seg.get("task_id") or "", src, label))
 ' > "$CACHE.tmp" 2>/dev/null && mv "$CACHE.tmp" "$CACHE"
 }
 
@@ -54,10 +56,10 @@ label=$(printf '%s' "$state" | cut -f4-)
 [ -n "$label" ] || label=$(printf '%s' "$state" | cut -f2-)  # legacy-cache tolerance
 [ -n "$ends" ] || exit 0
 
-# On an autonomous work machine (DWT_AUTONOMOUS=1) only THIS machine's own
-# session shows here — a session owned by another device is about to be seized
-# anyway, so it is not surfaced. Non-autonomous machines show the shared
-# session (default arbiter behaviour).
+# On an autonomous work machine (DWT_AUTONOMOUS=1) the statusline shows a
+# session only while THIS machine accrues its open segment — a segment
+# accruing on another laptop is that laptop's business (per-device scoping).
+# Non-autonomous machines show the shared session (default arbiter view).
 if [ "${DWT_AUTONOMOUS:-}" = "1" ] && [ -n "$source" ]; then
     this_machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo dwt)
     [ "$source" != "$this_machine" ] && exit 0

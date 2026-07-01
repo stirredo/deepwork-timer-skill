@@ -23,16 +23,29 @@ missing/expired — see Onboarding below.
 - **One active session per account.** Starting while another machine (or the
   phone PWA) has a session running TAKES IT OVER — the old segment is closed
   and attributed, and `dwt start` prints a `took over` warning.
-- **Foreign-session protection vs. autonomous machines.** By default a session
-  owned by ANOTHER device is protected: the hook surfaces it and proposes,
-  and `dwt log`/`dwt abandon`/auto-switch refuse it (so a laptop prompt can't
-  kill the phone's gym timer). A machine flagged **`dwt autonomous on`**
-  (`DWT_AUTONOMOUS=1` in its config) opts OUT: it owns its focus, so a
-  foreign-owned session is silently seized here (a mapped window hard-starts
-  its task on the next prompt; foreign sessions are hidden from this machine's
-  statusline). Set autonomous ON on dedicated work machines, leave it OFF
-  (default) on shared/phone-adjacent ones. The flag is per-machine (config
-  lives outside the repo). Check
+- **Segments carry the accruing device.** Each segment is stamped with `src`
+  (the device that opened it via start/switch). **Ownership follows the open
+  segment, not the session starter**: the device accruing right now is the
+  one whose statusline shows the task and the one allowed to `dwt log` /
+  `dwt abandon` (guards compare the OPEN segment's `src`; legacy src-less
+  segments fall back to the session `source`).
+- **Cross-laptop latching.** A second laptop joins the RUNNING pomodoro with
+  `dwt switch <id>` — never `dwt start`, which abandons the other laptop's
+  unlogged time and restarts the clock. After the latch, the first laptop's
+  segment stays credited, the clock keeps running, and completion logs ONE
+  pomodoro split across both devices' tasks. Only when the session is
+  OVERDUE is start correct: `dwt log --force` (credit the other device its
+  full time) then `dwt start <id>` fresh.
+- **Foreign-segment protection vs. autonomous machines.** By default a
+  segment accruing on ANOTHER device is protected: the hook surfaces it and
+  proposes, and log/abandon refuse it (a laptop prompt can't kill the
+  phone's gym timer). A machine flagged **`dwt autonomous on`**
+  (`DWT_AUTONOMOUS=1` in its config) opts out: its mapped windows LATCH
+  automatically on prompt (switch into the running pomodoro; overdue → log
+  --force + fresh start), and segments accruing elsewhere are hidden from
+  its statusline and never mentioned to the user. Set autonomous ON on
+  dedicated work machines, OFF (default) on shared/phone-adjacent ones.
+  The flag is per-machine (config lives outside the repo). Check
   `dwt status` before starting if unsure, and always surface takeovers.
 - The session has a fixed duration (the user's pomodoro length, default 25m)
   and an `ends_at`. Past `ends_at` it is **overdue**, not recorded: nothing
@@ -54,13 +67,13 @@ missing/expired — see Onboarding below.
 | `dwt repeat <task_id> <every:7d\|every:12h\|weekly:mon,thu>` | Make a task recurring: completing it records the cycle, un-completes it and re-snoozes until the next wake (one task identity — its hours accumulate); a Web Push fires when it wakes. `--clear` stops repeating. Completion-anchored `every:` is right for chores; `weekly:` for calendar rituals. |
 | `dwt done <task_id>` | Mark a task completed. |
 | `dwt start <task_id> [--minutes <n>]` | Start a SERVER session on the task (may take over — see above). `--minutes` sets a custom length (1–240; default is the account's pomodoro length). |
-| `dwt switch <task_id>` | Re-point the running session at another task; one pomodoro, honestly split per segment. |
+| `dwt switch <task_id>` | Re-point the running session at another task; one pomodoro, honestly split per segment. Sends this device's identity — this is also the cross-laptop LATCH (the new segment accrues here). |
 | `dwt abandon` | End the running session, logging nothing. |
 | `dwt log` | Complete the running server session → records the pomodoro with its per-task splits (server computes them). `--task <id> --minutes <n>` logs a fixed direct pomodoro instead. |
 | `dwt status` | Active session (task, remaining, segments, machine label) + today's total. |
 | `dwt stats` | Today / 7d / 30d / 365d / all-time, best day, daily average. |
 | `dwt map [<task_id>] [path]` | Map a working directory to a task for the multi-session arbiter (below). No args lists mappings; `--remove [path]` deletes; path defaults to the current directory; longest-prefix match wins. |
-| `dwt autonomous [on\|off\|status]` | Per-machine stance on foreign-owned sessions: `on` = this machine silently seizes them (dedicated work machine); `off` (default) = protect/defer to them. Writes `DWT_AUTONOMOUS` to the machine's config. |
+| `dwt autonomous [on\|off\|status]` | Per-machine stance on segments accruing elsewhere: `on` = latch silently (running → switch; overdue → log --force + fresh start); `off` (default) = protect/defer. Writes `DWT_AUTONOMOUS` to the machine's config. |
 | `dwt statusline-install` | Wrap this machine's Claude Code statusline so a live `🍅 task · mm:ss left` segment is appended. Idempotent; only edits `~/.claude/settings.json` — every machine keeps its own statusline. |
 | `dwt hooks-install` | Add a UserPromptSubmit hook that injects one line of live session state (`[dwt] …`) into Claude's context on every prompt. This is what powers the tracking loop below — act on those lines without being asked. |
 

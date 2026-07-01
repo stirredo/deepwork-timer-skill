@@ -434,7 +434,11 @@ rem = int(s.get("remaining_seconds") or 0)
 segs = s.get("segments") or []
 cur = next((x for x in reversed(segs) if x.get("seconds") is None), {})
 desc = (cur.get("task_description") or "").replace("|", "/")
+# the device accruing the OPEN segment owns the session right now; legacy
+# segments have no src and fall back to whoever started the session
+seg_src = cur.get("src") or s.get("source") or "?"
 parts = ["id=%s" % s["id"], "remaining=%s" % rem, "source=%s" % (s.get("source") or "?"),
+         "seg_src=%s" % seg_src,
          "task=%s" % (cur.get("task_id") if cur.get("task_id") is not None else "-"),
          "desc=%s" % desc, "overdue=%s" % ("yes" if s.get("overdue") else "no"),
          "segments=%s" % len(segs)]
@@ -451,6 +455,8 @@ server_session_get() {  # sets SRV_*; returns 1 if no endpoint, 2 if none active
     SRV_ID="${line%%|*}";       SRV_ID="${SRV_ID#id=}"
     SRV_REMAINING=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^remaining=//p")
     SRV_SOURCE=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^source=//p")
+    SRV_SEG_SRC=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^seg_src=//p")
+    [ -n "$SRV_SEG_SRC" ] || SRV_SEG_SRC="$SRV_SOURCE"
     SRV_TASK=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^task=//p")
     SRV_DESC=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^desc=//p")
     SRV_OVERDUE=$(printf "%s" "$line" | tr "|" "\n" | sed -n "s/^overdue=//p")
@@ -513,8 +519,8 @@ cmd_switch() {
     local body
     body=$(py '
 import json, sys
-print(json.dumps({"task_id": int(sys.argv[1])}))
-' "$task_id")
+print(json.dumps({"task_id": int(sys.argv[1]), "source": sys.argv[2]}))
+' "$task_id" "$(machine_label)")
     api POST "/session/switch" "$body"
     [ "$API_STATUS" = "404" ] && die "no active server session (or the server predates sessions). Run: dwt start <task_id>"
     check_status
@@ -526,8 +532,11 @@ cmd_abandon() {
     require_token
     local force=0
     [ "${1:-}" = "--force" ] && force=1
-    if [ "$force" != 1 ] && server_session_get && [ "$SRV_SOURCE" != "$(machine_label)" ]; then
-        die "active session was started on '$SRV_SOURCE', not this machine — abandoning it from here would silently kill the user's timer there. Re-run with --force only if the user explicitly asks."
+    # ownership follows the OPEN SEGMENT's device (who is accruing right
+    # now), not the session starter — a laptop that latched in via
+    # `dwt switch` owns the paperwork from that moment.
+    if [ "$force" != 1 ] && server_session_get && [ "$SRV_SEG_SRC" != "$(machine_label)" ]; then
+        die "the open segment is accruing on '$SRV_SEG_SRC', not this machine — abandoning from here would silently kill the user's timer there. Re-run with --force only if the user explicitly asks."
     fi
     api DELETE "/session"
     [ "$API_STATUS" = "404" ] && { rm -f "$SESSION_FILE"; echo "No server session; cleared any local one."; return 0; }
@@ -653,11 +662,14 @@ cmd_log() {
     # server session takes precedence when no explicit overrides are given
     if [ -z "$task" ] && [ -z "$minutes" ]; then
         if server_session_get; then
-            # The session is shared account-wide. If another device started
-            # it (phone at the gym, another machine), the human's attention
-            # is THERE — completing it from here would cut their timer off.
-            if [ "$SRV_SOURCE" != "$(machine_label)" ] && [ "$force" != 1 ]; then
-                die "active session was started on '$SRV_SOURCE', not this machine — the user may be working there (phone/gym/other laptop). Log it from that device, let it be handled there, or re-run with --force only if the user explicitly asks."
+            # The session is shared account-wide; ownership follows the
+            # OPEN SEGMENT. If another device is accruing right now (phone
+            # at the gym, the other laptop), the human's attention is THERE
+            # — completing it from here would cut their timer off. A device
+            # that latched in via `dwt switch` owns the open segment and may
+            # log freely, even if the session was started elsewhere.
+            if [ "$SRV_SEG_SRC" != "$(machine_label)" ] && [ "$force" != 1 ]; then
+                die "the open segment is accruing on '$SRV_SEG_SRC', not this machine — the user may be working there (phone/gym/other laptop). Log from there, or re-run with --force only if the user explicitly asks."
             fi
             api POST "/session/complete"
             check_status
@@ -849,7 +861,7 @@ cmd_status() {
     server_session_get; srv_rc=$?
     if [ "$srv_rc" = 0 ]; then
         local where=""
-        [ "$SRV_SOURCE" != "$(machine_label)" ] && where=" on $SRV_SOURCE"
+        [ "$SRV_SEG_SRC" != "$(machine_label)" ] && where=" on $SRV_SEG_SRC"
         if [ "$SRV_OVERDUE" = "yes" ]; then
             label="task $SRV_TASK"; [ -n "$SRV_DESC" ] && label="$SRV_DESC (task $SRV_TASK)"
             echo "Active session$where: $label — finished (run 'dwt log' to record it; $SRV_SEGMENTS segment(s))"
