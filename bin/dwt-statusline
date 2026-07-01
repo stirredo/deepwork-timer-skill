@@ -47,12 +47,20 @@ fi
 [ -f "$CACHE" ] || exit 0
 state=$(cat "$CACHE" 2>/dev/null)
 [ "$state" = "none" ] && exit 0
-ends=${state%%	*}
-rest=${state#*	}
-# 4-field cache: ends \t task_id \t source \t label (label = last field)
-label=${rest##*	}
-[ -n "$label" ] || label=$rest
-[ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
+# 4-field cache: ends \t task_id \t source \t label
+ends=$(printf '%s' "$state" | cut -f1)
+source=$(printf '%s' "$state" | cut -f3)
+label=$(printf '%s' "$state" | cut -f4-)
+[ -n "$label" ] || label=$(printf '%s' "$state" | cut -f2-)  # legacy-cache tolerance
+[ -n "$ends" ] || exit 0
+
+# On an autonomous work machine (DWT_AUTONOMOUS=1) only THIS machine's own
+# session shows here — a session owned by another device is about to be seized
+# anyway, so it is not surfaced. Non-autonomous machines show the shared
+# session (default arbiter behaviour).
+if [ "${DWT_AUTONOMOUS:-}" = "1" ] && [ -n "$source" ]; then
+    [ "$source" != "$(hostname -s 2>/dev/null || echo dwt)" ] && exit 0
+fi
 
 left=$(( ends - now ))
 if [ "$left" -le 0 ]; then
