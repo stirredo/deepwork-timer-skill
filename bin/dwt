@@ -410,7 +410,18 @@ print("Completed task {}: {}".format(t.get("id"), t.get("description")))
 # One active session per ACCOUNT, visible from every machine. Falls back to
 # the local session file when the server predates the endpoints (404).
 
-machine_label() { hostname -s 2>/dev/null || echo "dwt"; }
+# Stable per-machine identity used as the session `source` and for all
+# device scoping. `hostname -s` is NOT stable on macOS — it follows DHCP /
+# reverse-DNS and flips to a MAC address when the network has no name, so a
+# machine would eventually stop recognising its own sessions. Prefer the
+# macOS LocalHostName (set in Sharing, stable across networks), then fall
+# back to hostname on other platforms. The hooks replicate this exactly.
+machine_label() {
+    scutil --get LocalHostName 2>/dev/null \
+        || hostname -s 2>/dev/null \
+        || hostname 2>/dev/null \
+        || echo "dwt"
+}
 
 PY_SESSION_SUMMARY='
 import json, os, sys

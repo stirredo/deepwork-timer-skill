@@ -59,7 +59,8 @@ label=$(printf '%s' "$state" | cut -f4-)
 # anyway, so it is not surfaced. Non-autonomous machines show the shared
 # session (default arbiter behaviour).
 if [ "${DWT_AUTONOMOUS:-}" = "1" ] && [ -n "$source" ]; then
-    [ "$source" != "$(hostname -s 2>/dev/null || echo dwt)" ] && exit 0
+    this_machine=$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo dwt)
+    [ "$source" != "$this_machine" ] && exit 0
 fi
 
 left=$(( ends - now ))

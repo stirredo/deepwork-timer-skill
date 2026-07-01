@@ -120,7 +120,8 @@ case "$tid" in (*[!0-9]*) tid="" ;; esac
 [ -n "$ends" ] && [ "$ends" != "$state" ] || exit 0
 now=$(date +%s)
 left=$(( ends - now ))
-this_dev=$(hostname -s 2>/dev/null || echo dwt)
+# stable machine identity — must match dwt's machine_label() exactly
+this_dev=$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo dwt)
 
 # ---- autonomous work machine: SEIZE a foreign-owned session ----------------
 # DWT_AUTONOMOUS=1 opts THIS device out of the foreign-session protection: it
