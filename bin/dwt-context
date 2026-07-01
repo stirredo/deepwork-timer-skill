@@ -93,6 +93,15 @@ print(latched or best[0])
 # trigger the same refresh logic the statusline uses
 "$BIN/dwt-statusline" >/dev/null 2>&1
 
+# cold cache (first prompt on this machine): the refresh runs in the
+# background — wait briefly for it instead of silently skipping the prompt
+# (the hook has a 5s budget; ~2s is plenty for one API round-trip)
+tries=0
+while [ ! -f "$CACHE" ] && [ "$tries" -lt 10 ]; do
+    sleep 0.2
+    tries=$(( tries + 1 ))
+done
+
 [ -f "$CACHE" ] || exit 0
 state=$(cat "$CACHE" 2>/dev/null)
 
@@ -123,37 +132,46 @@ left=$(( ends - now ))
 # stable machine identity — must match dwt's machine_label() exactly
 this_dev=$(scutil --get LocalHostName 2>/dev/null || hostname -s 2>/dev/null || hostname 2>/dev/null || echo dwt)
 
-# ---- autonomous work machine: SEIZE a foreign-owned session ----------------
-# DWT_AUTONOMOUS=1 opts THIS device out of the foreign-session protection: it
-# owns its focus, so a session running on another device (phone at the gym,
-# other laptop) is taken over here rather than deferred to. If this window
-# maps to a task, hard-start it (dwt start = clean takeover, new session owned
-# by this device; the other device logs its own prior time). Debounced via the
-# shared arbiter lock — at most one seize/switch per 60s, so we do not re-seize
-# every prompt in the window before the cache refreshes to this device.
+# ---- autonomous work machine: LATCH into a foreign-accruing session --------
+# DWT_AUTONOMOUS=1 opts THIS device out of the foreign-session protection.
+# src_dev is the device accruing the OPEN SEGMENT (not the session starter).
+# A RUNNING pomodoro is never restarted: this machine latches into it with
+# `dwt switch` — a new segment starts accruing here while the other laptop's
+# segment stays credited, and completion logs ONE pomodoro split across both
+# devices' tasks. Only an OVERDUE session gets the log-then-fresh-start path
+# (a segment opened after ends_at could never accrue). Debounced via the
+# shared arbiter lock — at most one mutation per 60s.
 if [ "${DWT_AUTONOMOUS:-}" = "1" ] && [ -n "$src_dev" ] && [ "$src_dev" != "$this_dev" ]; then
     if [ -n "$mapped" ]; then
-        seized=0
+        acted=""
         if mkdir "$CFG/arbiter.lock" 2>/dev/null; then
             last=$(cat "$CFG/arbiter-last" 2>/dev/null || echo 0)
             case "$last" in (*[!0-9]*|'') last=0 ;; esac
             if [ $(( now - last )) -ge 60 ]; then
                 echo "$now" > "$CFG/arbiter-last"
-                ( "$BIN/dwt" start "$mapped" >/dev/null 2>&1 & ) 2>/dev/null
-                seized=1
+                if [ "$left" -gt 0 ]; then
+                    ( "$BIN/dwt" switch "$mapped" >/dev/null 2>&1 & ) 2>/dev/null
+                    acted="latched"
+                else
+                    # overdue: credit the other laptop its full time, then
+                    # start fresh here — loss-proof on both sides
+                    ( { "$BIN/dwt" log --force || true; "$BIN/dwt" start "$mapped"; } >/dev/null 2>&1 & ) 2>/dev/null
+                    acted="rolled"
+                fi
             fi
             rmdir "$CFG/arbiter.lock" 2>/dev/null
         fi
-        if [ "$seized" = 1 ]; then
-            echo "[dwt] (autonomous) took the account session onto this window's task $mapped — fresh pomodoro started here; '$src_dev' logs its own prior time."
-        else
-            echo "[dwt] (autonomous) seizing onto task $mapped shortly (debounced); it was running from '$src_dev'."
-        fi
+        case "$acted" in
+            latched) echo "[dwt] (autonomous) latched into the running pomodoro on this window's task $mapped — '$src_dev''s segment stays credited; one pomodoro will split across both." ;;
+            rolled)  echo "[dwt] (autonomous) the session from '$src_dev' was overdue — logged it (their time credited) and started a fresh pomodoro on task $mapped." ;;
+            *)       echo "[dwt] (autonomous) will latch onto task $mapped shortly (debounced); the open segment is accruing on '$src_dev'." ;;
+        esac
         exit 0
     fi
-    # unmapped: cannot seize to a specific task — do NOT surface the foreign
-    # session; treat this machine as free and let the next task be proposed.
-    echo "[dwt] no active session on this machine (one runs on '$src_dev' — not surfaced; autonomous machine). $PROPOSE"
+    # unmapped: nothing to latch to — do NOT surface the foreign segment;
+    # treat this machine as free. When proposing, prefer \`dwt switch <id>\`
+    # (joins the running pomodoro) over \`dwt start\` (would restart it).
+    echo "[dwt] no segment accruing on this machine (one runs on '$src_dev' — not surfaced; autonomous). $PROPOSE Prefer \`dwt switch <id>\` over \`dwt start\` while the account session is running."
     exit 0
 fi
 
