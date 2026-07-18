@@ -108,19 +108,38 @@ when Claude does the execution. Follow this loop:
 4. Prefer the CLI over raw API calls — including custom session lengths
    (`dwt start <id> --minutes <n>`).
 
-## Contorch integration (context-orchestrator MCP)
+## Contorch integration (context-orchestrator MCP) — protocol v2
 
 A contorch task maps to a dwt PROJECT — contorch holds the context for an
-effort; dwt measures time against it. When `get_task()` runs:
+effort; dwt measures time against it. The linkage is a plain contorch
+SOURCE with a `dwt://` reference; contorch carries no dwt-specific code
+(the old `link_dwt_project()` tool is gone and must not come back), and
+dwt works fully standalone — this section only applies when the
+context-orchestrator MCP is present in the session.
 
-- Manifest shows `Deep Work Timer project: <id>` → create granular dwt
-  tasks under that project for new work items (`dwt add "..." --project
-  <id>`), start/switch sessions on them, and `dwt done` each one as the
-  work item completes (a merged PR, a shipped fix).
-- Manifest says not linked → check `dwt projects` for a matching project,
-  create one if needed (`dwt projects --add "<name>"`), then record it via
-  the contorch `link_dwt_project()` tool so every future session inherits
-  the linkage.
+The convention:
+
+- **Link marker**: a source on the contorch task with
+  `reference = "dwt://project/<id>"` (source_type `url`, notes
+  `"Deep Work Timer project link"`). Contorch stores it as an opaque
+  source; `UNIQUE(task_id, source_type, reference)` makes re-adding
+  idempotent, and url-type sources are never embedded.
+- **On `get_task()`**: scan the manifest's sources for `dwt://project/`.
+  Found → that's the dwt project: create granular dwt tasks under it for
+  new work items (`dwt add "..." --project <id>`), start/switch sessions
+  on them, `dwt done` each as the work item completes (a merged PR, a
+  shipped fix).
+- **Not found** → check `dwt projects` for a matching project, create one
+  if needed (`dwt projects --add "<name>"`), then record the marker:
+  `add_source(task_name=<contorch task>, source_type="url",
+  reference="dwt://project/<id>", notes="Deep Work Timer project link")`
+  so every future session inherits the linkage.
+- **Re-link/unlink**: `remove_source` the old marker before adding a new
+  one — at most one `dwt://project/` source per contorch task.
+
+Never propose adding dwt hooks inside contorch itself; the coupling
+direction is one-way (dwt reads/writes generic contorch sources) so
+either tool can evolve or be uninstalled without breaking the other.
 
 ## Multiple Claude Code windows (the arbiter)
 
